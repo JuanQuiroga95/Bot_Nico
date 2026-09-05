@@ -176,31 +176,40 @@ async function iniciarEscaneo(intento = 1) {
             .slice(0, SCAN_CHATS);
         console.log(`Analizando ${chats.length} chats de los ultimos ${SCAN_DAYS} dias.`);
 
+        let revisados = 0;
+        let enviados = 0;
         for (const chat of chats) {
-            console.log(`Analizando chat con: ${chat.name || chat.id.user}`);
+            // Un chat ilegible no puede cortar el barrido de todos los demas.
+            try {
+                const messages = await chat.fetchMessages({ limit: SCAN_MESSAGES });
 
-            const messages = await chat.fetchMessages({ limit: SCAN_MESSAGES });
+                let chatText = '';
+                let containsKeywords = false;
 
-            let chatText = '';
-            let containsKeywords = false;
+                for (const msg of messages) {
+                    const body = (msg.body || '').toLowerCase();
+                    chatText += `[${msg.fromMe ? 'Vendedor' : 'Cliente'}]: ${msg.body}\n`;
 
-            for (const msg of messages) {
-                const body = msg.body.toLowerCase();
-                chatText += `[${msg.fromMe ? 'Vendedor' : 'Cliente'}]: ${msg.body}\n`;
-
-                if (!msg.fromMe && keywordMatcher.matches(body)) {
-                    containsKeywords = true;
+                    if (!msg.fromMe && keywordMatcher.matches(body)) {
+                        containsKeywords = true;
+                    }
                 }
-            }
 
-            if (containsKeywords) {
-                console.log(`Enviando historial de ${chat.id.user} a Next.js para análisis...`);
-                await enviarANextJS(chat.id.user, chat.name, chatText);
+                if (containsKeywords) {
+                    console.log(`Enviando historial de ${chat.id.user} a Next.js para análisis...`);
+                    await enviarANextJS(chat.id.user, chat.name, chatText);
+                    enviados++;
+                }
+            } catch (error) {
+                console.error(`No se pudo leer el chat de ${chat.id?.user}:`, error?.message || error);
             }
+            revisados++;
+            if (revisados % 25 === 0) console.log(`Barrido: ${revisados} de ${chats.length} chats revisados, ${enviados} enviados a analizar.`);
 
             // Delay para evitar baneos
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
+        console.log(`Barrido terminado: ${revisados} chats revisados, ${enviados} enviados a analizar.`);
 
         console.log('Escaneo inicial completado. El bot quedará a la espera de nuevos mensajes.');
     } catch (error) {
@@ -213,22 +222,27 @@ async function iniciarEscaneo(intento = 1) {
 
 // Escuchar nuevos mensajes en tiempo real
 client.on('message', async (msg) => {
-    const body = msg.body.toLowerCase();
-    
-    // Si un mensaje nuevo contiene las palabras clave, podemos procesar el chat nuevamente
-    if (keywordMatcher.matches(body)) {
+    // Un mensaje que no se puede leer no debe tumbar al bot ni cortar el barrido.
+    try {
+        const body = (msg.body || '').toLowerCase();
+
+        // Si un mensaje nuevo contiene las palabras clave, podemos procesar el chat nuevamente
+        if (!keywordMatcher.matches(body)) return;
+
         const chat = await msg.getChat();
         if (!esChatDeCliente(chat)) return;
 
         console.log(`\n¡Nuevo mensaje relevante de ${chat.name || chat.id.user}! Enviando a Next.js...`);
         const messages = await chat.fetchMessages({ limit: 20 });
-        
+
         let chatText = '';
         for (const m of messages) {
             chatText += `[${m.fromMe ? 'Vendedor' : 'Cliente'}]: ${m.body}\n`;
         }
 
         await enviarANextJS(chat.id.user, chat.name, chatText);
+    } catch (error) {
+        console.error('[WhatsApp] No se pudo procesar un mensaje entrante:', error?.message || error);
     }
 });
 
@@ -280,9 +294,10 @@ process.on('uncaughtException', error => {
     console.error('[WhatsApp] Fallo no controlado, reiniciando:', error);
     process.exit(1);
 });
+// Una promesa suelta no justifica tirar el bot: whatsapp-web.js falla seguido al leer
+// mensajes de sistema, y reiniciar por eso cancelaba el barrido del historial.
 process.on('unhandledRejection', error => {
-    console.error('[WhatsApp] Promesa rechazada sin control, reiniciando:', error);
-    process.exit(1);
+    console.error('[WhatsApp] Promesa rechazada sin control (el bot sigue andando):', error);
 });
 
 console.log('[WhatsApp] Iniciando navegador y cargando WhatsApp Web...');
