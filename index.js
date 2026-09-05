@@ -6,7 +6,8 @@ import dotenv from 'dotenv';
 import { createBotStatusServer } from './bot-status.js';
 import { createKeywordMatcher } from './keywords.js';
 import { createCampaign } from './campaign.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 
 dotenv.config();
 
@@ -25,6 +26,25 @@ const SCAN_CHATS = Number(process.env.SCAN_CHATS) || 150;
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth';
 console.log(`[WhatsApp] Sesion guardada en ${AUTH_PATH}${process.env.WWEBJS_AUTH_PATH ? '' : ' (temporal: se pierde al reiniciar)'}.`);
 console.log(`[WhatsApp] ${existsSync(AUTH_PATH) ? 'Hay una sesion previa en esa ruta: no deberia pedir QR.' : 'No hay sesion previa: va a pedir QR.'}`);
+
+// Si el contenedor se apaga de golpe, Chrome deja cerraduras que impiden reusar el perfil
+// y WhatsApp descarta la sesion. Se borran al arrancar: no contienen credenciales.
+function limpiarBloqueos(ruta, profundidad = 0) {
+    if (profundidad > 3 || !existsSync(ruta)) return;
+    for (const entrada of readdirSync(ruta, { withFileTypes: true })) {
+        const hijo = join(ruta, entrada.name);
+        if (entrada.isDirectory()) limpiarBloqueos(hijo, profundidad + 1);
+        else if (['SingletonLock', 'SingletonCookie', 'SingletonSocket'].includes(entrada.name)) {
+            rmSync(hijo, { force: true });
+            console.log('[WhatsApp] Cerradura de Chrome eliminada:', hijo);
+        }
+    }
+}
+try {
+    limpiarBloqueos(AUTH_PATH);
+} catch (error) {
+    console.error('[WhatsApp] No se pudieron revisar las cerraduras de Chrome:', error);
+}
 
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
@@ -230,6 +250,29 @@ async function enviarANextJS(phoneNumber, contactName, history) {
         console.error(`[ERROR] Al enviar datos de ${phoneNumber}:`, error.response?.data || error.message);
     }
 }
+
+// Railway avisa con SIGTERM antes de apagar el contenedor. Si Chrome no cierra ordenado,
+// deja el perfil a medio escribir y WhatsApp descarta la sesion en el siguiente arranque.
+let cerrando = false;
+async function apagar(senal) {
+    if (cerrando) return;
+    cerrando = true;
+    console.log(`[WhatsApp] ${senal} recibido: cerrando el navegador para conservar la sesion.`);
+    const limite = setTimeout(() => {
+        console.error('[WhatsApp] El navegador tardo demasiado en cerrar. Saliendo igual.');
+        process.exit(0);
+    }, 15000);
+    try {
+        await client.destroy();
+        console.log('[WhatsApp] Navegador cerrado. La sesion quedo guardada.');
+    } catch (error) {
+        console.error('[WhatsApp] No se pudo cerrar el navegador:', error);
+    }
+    clearTimeout(limite);
+    process.exit(0);
+}
+process.on('SIGTERM', () => apagar('SIGTERM'));
+process.on('SIGINT', () => apagar('SIGINT'));
 
 // Sin esto, una falla del navegador termina el proceso con un volcado de Puppeteer que
 // no dice nada sobre el bot. Railway reinicia igual, pero el log queda explicado.
