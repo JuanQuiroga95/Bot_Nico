@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { canEditLeads } from '@/lib/auth';
-import { isLeadStatus, normalizePhone } from '@/lib/leads';
+import { isLeadStatus, normalizePhone, renderMessage } from '@/lib/leads';
 import { passwordMatches, signSession } from '@/lib/session';
 export type ActionResult = { error?: string; success?: string; id?: string };
 export async function login(_previous: ActionResult, form: FormData): Promise<ActionResult> {
@@ -26,6 +26,41 @@ export async function login(_previous: ActionResult, form: FormData): Promise<Ac
 export async function logout() {
   (await cookies()).delete('nico-session');
   redirect('/login');
+}
+// Encola la campaña en el bot y recién entonces marca los leads como contactados: si el
+// bot no responde, nada cambia y se puede reintentar sin perder el estado real.
+export async function startCampaign(_previous: ActionResult, form: FormData): Promise<ActionResult> {
+  if (!await canEditLeads()) return { error: 'Iniciá sesión para enviar mensajes.' };
+  const base = process.env.BOT_STATUS_URL;
+  const token = process.env.API_SECRET_TOKEN;
+  if (!base || !token) return { error: 'Falta configurar BOT_STATUS_URL o API_SECRET_TOKEN en Vercel.' };
+  const template = String(form.get('message') ?? '').trim();
+  if (template.length < 10 || template.length > 1000) return { error: 'Escribí un mensaje de entre 10 y 1000 caracteres.' };
+  const limit = Math.max(1, Math.min(200, Number.parseInt(String(form.get('limit')), 10) || 40));
+  const leads = await prisma.lead.findMany({
+    where: { status: 'PENDING_CONTACT' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: limit,
+    select: { id: true, name: true, phoneNumber: true, interestedIn: true },
+  });
+  const enviables = leads.filter(lead => normalizePhone(lead.phoneNumber));
+  if (!enviables.length) return { error: 'No hay contactos pendientes con un teléfono válido.' };
+  try {
+    const url = new URL('/send', base);
+    if (url.protocol !== 'https:' && !(process.env.NODE_ENV !== 'production' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Invalid bot URL');
+    const response = await fetch(url, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: enviables.map(lead => ({ phoneNumber: lead.phoneNumber, message: renderMessage(template, lead) })) }),
+      cache: 'no-store', signal: AbortSignal.timeout(10000), redirect: 'error',
+    });
+    if (!response.ok) return { error: response.status === 401 ? 'El API_SECRET_TOKEN de Vercel no coincide con el de Railway.' : 'El bot rechazó la campaña. Revisá su despliegue.' };
+    const result = await response.json();
+    await prisma.lead.updateMany({ where: { id: { in: enviables.map(lead => lead.id) } }, data: { status: 'CONTACTED' } });
+    revalidatePath('/');
+    revalidatePath('/leads');
+    revalidatePath('/campanas');
+    return { success: `${result.queued} mensajes en cola. Salen de a uno, espaciados, con un tope de ${result.cap} por día.` };
+  } catch {
+    return { error: 'No pudimos conectar con el bot. Revisá BOT_STATUS_URL y que Railway esté funcionando.' };
+  }
 }
 export async function saveLead(_previous: ActionResult, form: FormData): Promise<ActionResult> {
   if (!await canEditLeads()) return { error: 'Iniciá sesión para guardar cambios. Configurá DASHBOARD_PASSWORD en Vercel si todavía no está habilitado.' };

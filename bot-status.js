@@ -22,7 +22,7 @@ export function qrToSvg(value) {
     return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + dimension + ' ' + dimension + '" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="white"/><path d="' + modules.join('') + '" fill="black"/></svg>';
 }
 
-export function createBotStatusServer(client, { token = '', keywords = [], now = Date.now } = {}) {
+export function createBotStatusServer(client, { token = '', keywords = [], campaign = null, now = Date.now } = {}) {
     let state = 'STARTING';
     let qrSvg = null;
     let qrTime = 0;
@@ -40,19 +40,38 @@ export function createBotStatusServer(client, { token = '', keywords = [], now =
     client.on('auth_failure', () => update('AUTH_FAILURE'));
     client.on('disconnected', () => update('DISCONNECTED'));
 
-    const server = createServer((request, response) => {
+    const server = createServer(async (request, response) => {
         response.setHeader('Cache-Control', 'no-store, private');
         response.setHeader('Content-Type', 'application/json; charset=utf-8');
         response.setHeader('X-Content-Type-Options', 'nosniff');
         const send = (code, value) => { response.writeHead(code); response.end(JSON.stringify(value)); };
-        if (request.method !== 'GET') { response.setHeader('Allow', 'GET'); return send(405, { error: 'Method not allowed' }); }
-        if (request.url === '/health') return send(200, { ok: true });
+        const digest = value => createHash('sha256').update(value).digest();
+        const autorizado = () => timingSafeEqual(digest(request.headers.authorization || ''), digest('Bearer ' + token));
+        if (request.method === 'GET' && request.url === '/health') return send(200, { ok: true });
+        // Encola mensajes de reactivacion. Solo el dashboard, que conoce el token, puede pedirlo.
+        if (request.method === 'POST' && request.url === '/send') {
+            if (!campaign) return send(404, { error: 'Not found' });
+            if (!token) return send(503, { error: 'API_SECRET_TOKEN is not configured' });
+            if (!autorizado()) return send(401, { error: 'Unauthorized' });
+            let body = '';
+            for await (const chunk of request) {
+                body += chunk;
+                if (body.length > 200000) return send(413, { error: 'Payload too large' });
+            }
+            let items;
+            try { items = JSON.parse(body || '{}').items; } catch { return send(400, { error: 'Invalid JSON' }); }
+            if (!Array.isArray(items) || items.length > 200) return send(400, { error: 'Invalid items' });
+            return send(200, { queued: campaign.enqueue(items), ...campaign.stats() });
+        }
+        if (request.method !== 'GET') { response.setHeader('Allow', 'GET, POST'); return send(405, { error: 'Method not allowed' }); }
         if (request.url !== '/status') return send(404, { error: 'Not found' });
         if (!token) return send(503, { error: 'API_SECRET_TOKEN is not configured' });
-        const digest = value => createHash('sha256').update(value).digest();
-        if (!timingSafeEqual(digest(request.headers.authorization || ''), digest('Bearer ' + token))) return send(401, { error: 'Unauthorized' });
+        if (!autorizado()) return send(401, { error: 'Unauthorized' });
         const fresh = qrSvg && now() - qrTime < 60000;
-        return send(200, { state, qrSvg: fresh ? qrSvg : null, qrUpdatedAt: fresh ? new Date(qrTime).toISOString() : null, keywords });
+        return send(200, {
+            state, qrSvg: fresh ? qrSvg : null, qrUpdatedAt: fresh ? new Date(qrTime).toISOString() : null,
+            keywords, campaign: campaign ? campaign.stats() : null,
+        });
     });
     server.requestTimeout = 10000;
     server.headersTimeout = 10000;

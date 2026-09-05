@@ -294,6 +294,9 @@ textarea { resize: vertical; }
 .connection-item p { margin-top: 5px; }
 .status-dot { width: 9px; height: 9px; flex-shrink: 0; margin-top: 5px; background: #fbbf24; border-radius: 50%; }
 .status-dot.ok { background: #34d399; }
+.preview { padding: 16px; border: 1px solid #22c55e33; border-radius: 10px; background: #22c55e0a; line-height: 1.7; font-size: .9rem; }
+.preview strong { display: block; margin-bottom: 8px; color: #86efac; font-size: .78rem; letter-spacing: .04em; text-transform: uppercase; }
+.preview p { color: #e2e8f0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .steps { padding-left: 20px; color: #94a3b8; line-height: 1.8; font-size: .9rem; margin-top: 16px; }
 .steps li { margin-bottom: 10px; }
 hr { border: 0; border-top: 1px solid var(--card-border); margin: 26px 0; }

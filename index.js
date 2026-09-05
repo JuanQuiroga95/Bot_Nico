@@ -5,6 +5,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import { createBotStatusServer } from './bot-status.js';
 import { createKeywordMatcher } from './keywords.js';
+import { createCampaign } from './campaign.js';
 
 dotenv.config();
 
@@ -33,7 +34,17 @@ const client = new Client({
     }
 });
 
-const statusServer = createBotStatusServer(client, { token: process.env.API_SECRET_TOKEN, keywords: keywordMatcher.terms });
+// Los envios de reactivacion salen por el mismo WhatsApp vinculado. Si todavia no esta
+// conectado, la cola espera en lugar de perder mensajes.
+let whatsappListo = false;
+const campaign = createCampaign(async (phoneNumber, message) => {
+    await client.sendMessage(phoneNumber + '@c.us', message);
+    console.log('[Campana] Mensaje enviado a', phoneNumber);
+}, { cap: Number(process.env.SEND_DAILY_CAP) || 40, canSend: () => whatsappListo });
+// Retoma la cola cuando se libera el tope diario o vuelve la conexion.
+setInterval(() => campaign.pump(), 1800000).unref();
+
+const statusServer = createBotStatusServer(client, { token: process.env.API_SECRET_TOKEN, keywords: keywordMatcher.terms, campaign });
 statusServer.listen(Number(process.env.PORT) || 3001, '0.0.0.0', () => {
     console.log('[WhatsApp] Servicio de estado y QR disponible para el dashboard.');
 });
@@ -69,6 +80,7 @@ client.on('auth_failure', (message) => {
 let reconectando = false;
 client.on('disconnected', async (reason) => {
     connectionStatus = 'desconectado, reintentando';
+    whatsappListo = false;
     console.error('[WhatsApp] Desconectado:', reason);
     if (reconectando) return;
     reconectando = true;
@@ -93,6 +105,9 @@ client.on('disconnected', async (reason) => {
 client.on('ready', () => {
     clearTimeout(startupNotice);
     connectionStatus = 'listo';
+    whatsappListo = true;
+    // Si quedaron mensajes esperando una reconexion, salen ahora.
+    campaign.pump();
 });
 
 client.on('qr', (qr) => {

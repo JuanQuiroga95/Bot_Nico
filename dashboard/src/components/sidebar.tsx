@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, MessageSquare, Settings, Users } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Send, Settings, Users } from 'lucide-react';
 export default function Sidebar() {
   const pathname = usePathname();
   return <aside className="sidebar glass-panel">
@@ -9,6 +9,7 @@ export default function Sidebar() {
     <nav aria-label="Navegación principal">{[
       { href: '/', label: 'Dashboard', icon: LayoutDashboard },
       { href: '/leads', label: 'Leads', icon: Users },
+      { href: '/campanas', label: 'Campañas', icon: Send },
       { href: '/configuracion', label: 'Configuración', icon: Settings },
     ].map(({ href, label, icon: Icon }) => {
       const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
