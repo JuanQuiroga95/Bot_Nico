@@ -14,11 +14,22 @@ const SECRET_TOKEN = process.env.API_SECRET_TOKEN;
 const keywordMatcher = createKeywordMatcher(process.env.KEYWORDS_EXTRA || '');
 console.log(`[WhatsApp] Deteccion activa con ${keywordMatcher.terms.length} palabras y frases comerciales.`);
 
+// Limites del escaneo inicial. Bajarlos si Railway reinicia el contenedor por memoria.
+const SCAN_MESSAGES = Number(process.env.SCAN_MESSAGES) || 30;
+const SCAN_DAYS = Number(process.env.SCAN_DAYS) || 30;
+const SCAN_CHATS = Number(process.env.SCAN_CHATS) || 150;
+
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth' }),
     puppeteer: {
-        // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz gráfica
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
+        // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz grafica
+        // y para que Chrome no gaste memoria en funciones que aqui no se usan.
+        args: [
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+            '--disable-gpu', '--disable-accelerated-2d-canvas', '--disable-extensions',
+            '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+        ],
     }
 });
 
@@ -52,8 +63,23 @@ client.on('auth_failure', (message) => {
     console.error('[WhatsApp] Error de autenticacion:', message);
 });
 
-client.on('disconnected', (reason) => {
+// Una desconexion no debe matar el proceso: con la sesion en disco se recupera sola.
+let reconectando = false;
+client.on('disconnected', async (reason) => {
+    connectionStatus = 'desconectado, reintentando';
     console.error('[WhatsApp] Desconectado:', reason);
+    if (reconectando) return;
+    reconectando = true;
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    try {
+        await client.initialize();
+        console.log('[WhatsApp] Reconexion iniciada.');
+    } catch (error) {
+        console.error('[WhatsApp] No se pudo reconectar:', error);
+        process.exit(1);
+    } finally {
+        reconectando = false;
+    }
 });
 
 client.on('ready', () => {
@@ -68,23 +94,31 @@ client.on('qr', (qr) => {
     qrcode.generate(qr, { small: true });
 });
 
+// El escaneo corre una sola vez por proceso: al reconectar no se repite.
+let escaneoHecho = false;
 client.on('ready', () => {
     console.log('¡Cliente de WhatsApp listo y conectado!');
-    iniciarEscaneo();
+    if (escaneoHecho) return;
+    escaneoHecho = true;
+    // Damos aire a la sincronizacion antes de leer historiales.
+    setTimeout(iniciarEscaneo, 15000);
 });
 
 async function iniciarEscaneo() {
     try {
         console.log('Obteniendo chats...');
-        const chats = await client.getChats();
-        
-        for (const chat of chats) {
-            if (chat.isGroup) continue; // Ignorar grupos
+        const desde = Date.now() / 1000 - SCAN_DAYS * 86400;
+        // Solo conversaciones individuales con actividad reciente: el resto no es recuperable.
+        const chats = (await client.getChats())
+            .filter(chat => !chat.isGroup && (chat.timestamp || 0) >= desde)
+            .slice(0, SCAN_CHATS);
+        console.log(`Analizando ${chats.length} chats de los ultimos ${SCAN_DAYS} dias.`);
 
+        for (const chat of chats) {
             console.log(`Analizando chat con: ${chat.name || chat.id.user}`);
 
-            const messages = await chat.fetchMessages({ limit: 100 });
-            
+            const messages = await chat.fetchMessages({ limit: SCAN_MESSAGES });
+
             let chatText = '';
             let containsKeywords = false;
 
@@ -101,11 +135,11 @@ async function iniciarEscaneo() {
                 console.log(`Enviando historial de ${chat.id.user} a Next.js para análisis...`);
                 await enviarANextJS(chat.id.user, chat.name, chatText);
             }
-            
+
             // Delay para evitar baneos
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
-        
+
         console.log('Escaneo inicial completado. El bot quedará a la espera de nuevos mensajes.');
     } catch (error) {
         console.error('Error durante el escaneo:', error);

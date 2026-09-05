@@ -19,7 +19,8 @@ Variables de **Railway**:
 - `API_SECRET_TOKEN`: el mismo secreto que en Vercel.
 - `PORT`: Railway lo proporciona; el bot escucha en todas las interfaces.
 - `KEYWORDS_EXTRA`: opcional; términos adicionales separados por coma. El bot ya incluye productos de limpieza, insumos y consultas comerciales, con tildes y plurales.
-- `WWEBJS_AUTH_PATH`: opcional. Para conservar la sesión entre despliegues, montá un volumen en `/data` y usá `/data/.wwebjs_auth`.
+- `WWEBJS_AUTH_PATH`: recomendada. Sin ella, cada reinicio pierde la vinculación y vuelve a pedir el QR. Montá un volumen en Railway y usá su **ruta de montaje** más `/.wwebjs_auth`; por ejemplo, con el volumen montado en `/bot-data`, el valor es `/bot-data/.wwebjs_auth`. Debe coincidir con la ruta de montaje, no con el nombre del volumen.
+- `SCAN_MESSAGES`, `SCAN_DAYS`, `SCAN_CHATS`: opcionales. Limitan el escaneo inicial a 30 mensajes por chat, 30 días de antigüedad y 150 conversaciones. Bajalos si Railway reinicia el contenedor por falta de memoria al vincular.
 
 Después de modificar variables, desplegá nuevamente el servicio correspondiente. Generá un dominio público para el bot y usalo en BOT_STATUS_URL. `/health` comprueba el servidor HTTP, no la conexión con WhatsApp. `/status` exige el token privado. El navegador accede al QR por Vercel con su sesión, sin conocer ese token.
 
