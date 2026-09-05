@@ -14,8 +14,6 @@ const KEYWORDS = ['combo', 'jabon', 'jabón', 'limpieza'];
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        // Ejecutable de Chromium provisto por Nixpacks en Railway
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 'chromium',
         // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz gráfica
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
     }
