@@ -1,0 +1,5 @@
+[providers.node]
+node_version = "20"
+
+[phases.setup]
+nixPkgs = ["...", "chromium"]
