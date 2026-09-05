@@ -90,6 +90,12 @@ client.on('disconnected', async (reason) => {
     console.error('[WhatsApp] Desconectado:', reason);
     if (reconectando) return;
     reconectando = true;
+    // Con LOGOUT la sesion quedo invalidada: reconectar en caliente hace fallar a Puppeteer
+    // ("Execution context was destroyed"). Conviene salir y dejar que arranque un proceso limpio.
+    if (String(reason).toUpperCase() === 'LOGOUT') {
+        console.error('[WhatsApp] La sesion fue cerrada desde el telefono. Reiniciando para pedir un QR nuevo.');
+        return process.exit(0);
+    }
     try {
         await client.destroy();
     } catch {
@@ -214,6 +220,17 @@ async function enviarANextJS(phoneNumber, contactName, history) {
         console.error(`[ERROR] Al enviar datos de ${phoneNumber}:`, error.response?.data || error.message);
     }
 }
+
+// Sin esto, una falla del navegador termina el proceso con un volcado de Puppeteer que
+// no dice nada sobre el bot. Railway reinicia igual, pero el log queda explicado.
+process.on('uncaughtException', error => {
+    console.error('[WhatsApp] Fallo no controlado, reiniciando:', error);
+    process.exit(1);
+});
+process.on('unhandledRejection', error => {
+    console.error('[WhatsApp] Promesa rechazada sin control, reiniciando:', error);
+    process.exit(1);
+});
 
 console.log('[WhatsApp] Iniciando navegador y cargando WhatsApp Web...');
 client.initialize().catch(async (error) => {
