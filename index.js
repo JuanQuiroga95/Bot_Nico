@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { createBotStatusServer } from './bot-status.js';
 import { createKeywordMatcher } from './keywords.js';
 import { createCampaign } from './campaign.js';
+import { existsSync } from 'node:fs';
 
 dotenv.config();
 
@@ -20,8 +21,13 @@ const SCAN_MESSAGES = Number(process.env.SCAN_MESSAGES) || 30;
 const SCAN_DAYS = Number(process.env.SCAN_DAYS) || 30;
 const SCAN_CHATS = Number(process.env.SCAN_CHATS) || 150;
 
+// Sin un volumen montado en esta ruta, cada despliegue vuelve a pedir el QR.
+const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth';
+console.log(`[WhatsApp] Sesion guardada en ${AUTH_PATH}${process.env.WWEBJS_AUTH_PATH ? '' : ' (temporal: se pierde al reiniciar)'}.`);
+console.log(`[WhatsApp] ${existsSync(AUTH_PATH) ? 'Hay una sesion previa en esa ruta: no deberia pedir QR.' : 'No hay sesion previa: va a pedir QR.'}`);
+
 const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
     puppeteer: {
         // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz grafica
         // y para que Chrome no gaste memoria en funciones que aqui no se usan.
