@@ -29,6 +29,11 @@ test('QR requiere token, vence y se elimina al autenticar', async t => {
   now += 60001;
   data = await (await fetch(url + '/status', { headers })).json();
   assert.equal(data.qrSvg, null);
+  client.emit('qr', 'scanned-pairing-code');
+  client.emit('loading_screen', 20, 'Cargando');
+  data = await (await fetch(url + '/status', { headers })).json();
+  assert.equal(data.state, 'LOADING');
+  assert.equal(data.qrSvg, null);
   client.emit('qr', 'fresh-pairing-code');
   client.emit('authenticated');
   data = await (await fetch(url + '/status', { headers })).json();

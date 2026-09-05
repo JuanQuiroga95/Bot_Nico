@@ -27,7 +27,9 @@ export function createBotStatusServer(client, { token = '', keywords = [], now =
     let qrSvg = null;
     let qrTime = 0;
     const update = next => { state = next; qrSvg = null; qrTime = 0; };
-    client.on('loading_screen', () => { if (!qrSvg) state = 'LOADING'; });
+    // La pantalla de carga solo aparece despues de autenticar: el QR pendiente ya fue usado
+    // y hay que descartarlo, o el panel seguiria diciendo que espera un escaneo.
+    client.on('loading_screen', () => update('LOADING'));
     client.on('qr', qr => {
         state = 'QR';
         qrSvg = qrToSvg(qr);
