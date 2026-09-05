@@ -20,5 +20,5 @@ RUN npm ci --omit=dev
 # Fallar en el build si Chrome no puede arrancar, sin conectar WhatsApp.
 RUN node --input-type=module -e "import puppeteer from 'puppeteer'; const browser = await puppeteer.launch({args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']}); console.log(await browser.version()); await browser.close();"
 
-COPY index.js ./
+COPY index.js bot-status.js keywords.js ./
 CMD ["node", "index.js"]

@@ -1,0 +1,1 @@
+export default function Loading() { return <div className="empty-state" role="status"><span className="loading-dot" /><h2>Cargando tu espacio…</h2><p>Estamos buscando la información más reciente.</p></div>; }

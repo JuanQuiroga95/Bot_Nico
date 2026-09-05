@@ -3,20 +3,32 @@ const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { createBotStatusServer } from './bot-status.js';
+import { createKeywordMatcher } from './keywords.js';
 
 dotenv.config();
 
 // Cambia esto a la URL de tu Next.js cuando lo subas a Vercel
 const NEXTJS_API_URL = process.env.NEXTJS_API_URL || 'http://localhost:3000/api/process-chat';
-const SECRET_TOKEN = process.env.API_SECRET_TOKEN || 'mi_secreto_super_seguro'; 
-const KEYWORDS = ['combo', 'jabon', 'jabón', 'limpieza'];
+const SECRET_TOKEN = process.env.API_SECRET_TOKEN;
+const keywordMatcher = createKeywordMatcher(process.env.KEYWORDS_EXTRA || '');
+console.log(`[WhatsApp] Deteccion activa con ${keywordMatcher.terms.length} palabras y frases comerciales.`);
 
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ dataPath: process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth' }),
     puppeteer: {
         // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz gráfica
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] 
     }
+});
+
+const statusServer = createBotStatusServer(client, { token: process.env.API_SECRET_TOKEN, keywords: keywordMatcher.terms });
+statusServer.listen(Number(process.env.PORT) || 3001, '0.0.0.0', () => {
+    console.log('[WhatsApp] Servicio de estado y QR disponible para el dashboard.');
+});
+statusServer.on('error', error => {
+    console.error('[WhatsApp] No se pudo iniciar el servicio de estado:', error);
+    process.exit(1);
 });
 
 let connectionStatus = 'iniciando navegador';
@@ -80,7 +92,7 @@ async function iniciarEscaneo() {
                 const body = msg.body.toLowerCase();
                 chatText += `[${msg.fromMe ? 'Vendedor' : 'Cliente'}]: ${msg.body}\n`;
 
-                if (!msg.fromMe && KEYWORDS.some(kw => body.includes(kw))) {
+                if (!msg.fromMe && keywordMatcher.matches(body)) {
                     containsKeywords = true;
                 }
             }
@@ -105,7 +117,7 @@ client.on('message', async (msg) => {
     const body = msg.body.toLowerCase();
     
     // Si un mensaje nuevo contiene las palabras clave, podemos procesar el chat nuevamente
-    if (KEYWORDS.some(kw => body.includes(kw))) {
+    if (keywordMatcher.matches(body)) {
         const chat = await msg.getChat();
         if (chat.isGroup) return;
 
@@ -123,6 +135,7 @@ client.on('message', async (msg) => {
 
 async function enviarANextJS(phoneNumber, contactName, history) {
     try {
+        if (!SECRET_TOKEN) throw new Error('Falta configurar API_SECRET_TOKEN en Railway.');
         await axios.post(NEXTJS_API_URL, {
             phoneNumber,
             contactName: contactName || 'No agendado',
