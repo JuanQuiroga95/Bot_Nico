@@ -129,23 +129,30 @@ client.on('qr', (qr) => {
     qrcode.generate(qr, { small: true });
 });
 
+// WhatsApp expone como chats a los estados (status@broadcast), los grupos y los canales.
+// Solo las conversaciones individuales tienen un telefono al que volver a escribir.
+function esChatDeCliente(chat) {
+    return !chat?.isGroup && chat?.id?.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat?.id?.user ?? '');
+}
+
 // El escaneo corre una sola vez por proceso: al reconectar no se repite.
 let escaneoHecho = false;
 client.on('ready', () => {
     console.log('¡Cliente de WhatsApp listo y conectado!');
     if (escaneoHecho) return;
     escaneoHecho = true;
-    // Damos aire a la sincronizacion antes de leer historiales.
-    setTimeout(iniciarEscaneo, 15000);
+    // Damos aire a la sincronizacion antes de leer historiales: con menos margen,
+    // getChats falla porque WhatsApp Web todavia esta acomodandose.
+    setTimeout(iniciarEscaneo, 60000);
 });
 
-async function iniciarEscaneo() {
+async function iniciarEscaneo(intento = 1) {
     try {
         console.log('Obteniendo chats...');
         const desde = Date.now() / 1000 - SCAN_DAYS * 86400;
         // Solo conversaciones individuales con actividad reciente: el resto no es recuperable.
         const chats = (await client.getChats())
-            .filter(chat => !chat.isGroup && (chat.timestamp || 0) >= desde)
+            .filter(chat => esChatDeCliente(chat) && (chat.timestamp || 0) >= desde)
             .slice(0, SCAN_CHATS);
         console.log(`Analizando ${chats.length} chats de los ultimos ${SCAN_DAYS} dias.`);
 
@@ -177,7 +184,10 @@ async function iniciarEscaneo() {
 
         console.log('Escaneo inicial completado. El bot quedará a la espera de nuevos mensajes.');
     } catch (error) {
-        console.error('Error durante el escaneo:', error);
+        // Recien vinculado, WhatsApp Web puede rechazar getChats hasta terminar de asentarse.
+        console.error(`Error durante el escaneo (intento ${intento} de 3):`, error);
+        if (intento < 3) setTimeout(() => iniciarEscaneo(intento + 1), 60000);
+        else console.error('[WhatsApp] El barrido del historial no pudo completarse. Reinicia el servicio para volver a intentarlo.');
     }
 }
 
@@ -188,7 +198,7 @@ client.on('message', async (msg) => {
     // Si un mensaje nuevo contiene las palabras clave, podemos procesar el chat nuevamente
     if (keywordMatcher.matches(body)) {
         const chat = await msg.getChat();
-        if (chat.isGroup) return;
+        if (!esChatDeCliente(chat)) return;
 
         console.log(`\n¡Nuevo mensaje relevante de ${chat.name || chat.id.user}! Enviando a Next.js...`);
         const messages = await chat.fetchMessages({ limit: 20 });
