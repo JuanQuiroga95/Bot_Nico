@@ -3,3 +3,4 @@ node_version = "20"
 
 [phases.setup]
 nixPkgs = ["...", "chromium"]
+aptPkgs = ["...", "libnss3", "libxss1", "libasound2", "libatk-bridge2.0-0", "libgtk-3-0", "libgbm-dev", "libglib2.0-0", "libnss3-dev"]
