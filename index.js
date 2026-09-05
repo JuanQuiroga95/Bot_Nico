@@ -64,17 +64,25 @@ client.on('auth_failure', (message) => {
 });
 
 // Una desconexion no debe matar el proceso: con la sesion en disco se recupera sola.
+// Ante LOGOUT la sesion guardada ya no sirve y el navegador se esta cerrando: hay que
+// esperar a que termine antes de reintentar, o Puppeteer falla al inyectar el cliente.
 let reconectando = false;
 client.on('disconnected', async (reason) => {
     connectionStatus = 'desconectado, reintentando';
     console.error('[WhatsApp] Desconectado:', reason);
     if (reconectando) return;
     reconectando = true;
+    try {
+        await client.destroy();
+    } catch {
+        // El navegador ya puede haberse cerrado solo al desvincular.
+    }
     await new Promise(resolve => setTimeout(resolve, 10000));
     try {
         await client.initialize();
-        console.log('[WhatsApp] Reconexion iniciada.');
+        console.log('[WhatsApp] Reconexion iniciada. Si la sesion caduco, se pedira un QR nuevo.');
     } catch (error) {
+        // Railway reinicia el contenedor y el proximo arranque parte de cero.
         console.error('[WhatsApp] No se pudo reconectar:', error);
         process.exit(1);
     } finally {
