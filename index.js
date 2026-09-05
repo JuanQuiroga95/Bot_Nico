@@ -19,7 +19,39 @@ const client = new Client({
     }
 });
 
+let connectionStatus = 'iniciando navegador';
+const startupNotice = setTimeout(() => {
+    console.log(`[WhatsApp] Sigue esperando conexion. Estado: ${connectionStatus}.`);
+}, 120000);
+startupNotice.unref();
+
+client.on('loading_screen', (percent, message) => {
+    connectionStatus = `cargando ${percent}%`;
+    console.log(`[WhatsApp] ${connectionStatus}: ${message}`);
+});
+
+client.on('authenticated', () => {
+    connectionStatus = 'autenticado, sincronizando';
+    console.log('[WhatsApp] Sesion autenticada. Esperando que termine de sincronizar.');
+});
+
+client.on('auth_failure', (message) => {
+    connectionStatus = 'error de autenticacion';
+    console.error('[WhatsApp] Error de autenticacion:', message);
+});
+
+client.on('disconnected', (reason) => {
+    console.error('[WhatsApp] Desconectado:', reason);
+});
+
+client.on('ready', () => {
+    clearTimeout(startupNotice);
+    connectionStatus = 'listo';
+});
+
 client.on('qr', (qr) => {
+    connectionStatus = 'QR generado, esperando escaneo';
+    console.log('[WhatsApp] QR generado. Escanea el ultimo QR en los Deploy Logs.');
     console.log('\n\n=== ESCANEA ESTE QR CON TU WHATSAPP ===\n');
     qrcode.generate(qr, { small: true });
 });
@@ -107,4 +139,14 @@ async function enviarANextJS(phoneNumber, contactName, history) {
     }
 }
 
-client.initialize();
+console.log('[WhatsApp] Iniciando navegador y cargando WhatsApp Web...');
+client.initialize().catch(async (error) => {
+    clearTimeout(startupNotice);
+    console.error('[WhatsApp] No se pudo inicializar:', error);
+    try {
+        await client.destroy();
+    } catch {
+        // El navegador puede no haber llegado a crearse.
+    }
+    process.exit(1);
+});
