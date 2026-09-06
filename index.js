@@ -55,7 +55,9 @@ const client = new Client({
     takeoverOnConflict: true,
     takeoverTimeoutMs: 0,
     puppeteer: {
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || 'chromium',
+        // Por defecto usa el Chrome instalado por Puppeteer durante el build.
+        // Una ruta personalizada debe apuntar al archivo: no se busca en PATH.
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
         // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz grafica
         // y para que Chrome no gaste memoria en funciones que aqui no se usan.
         args: [
