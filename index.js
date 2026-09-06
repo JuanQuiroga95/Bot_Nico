@@ -245,8 +245,58 @@ async function iniciarEscaneo(intento = 1) {
         for (const descriptor of chats) {
             // Un chat ilegible no puede cortar el barrido de todos los demas.
             try {
-                const chat = await client.getChatById(descriptor.id);
-                const messages = await chat.fetchMessages({ limit: SCAN_MESSAGES });
+                // client.getChatById y fetchMessages de WWebJS también están rotos por el mismo cambio
+                // de WhatsApp en IDBObjectStore. Leemos los mensajes directamente desde IndexedDB.
+                const messages = await client.pupPage.evaluate(async (chatId, limit) => {
+                    return new Promise((resolve) => {
+                        try {
+                            const request = indexedDB.open('model-storage');
+                            request.onsuccess = (event) => {
+                                const db = event.target.result;
+                                if (!db.objectStoreNames.contains('message')) {
+                                    return resolve([]);
+                                }
+                                const tx = db.transaction('message', 'readonly');
+                                const store = tx.objectStore('message');
+                                
+                                // Whatsapp Web indexa los mensajes por "chat" o "remote" dependiendo de la version.
+                                // Si no sabemos el index, podemos iterar con un cursor hacia atras.
+                                const msgs = [];
+                                const cursorRequest = store.openCursor(null, 'prev');
+                                
+                                cursorRequest.onsuccess = (e) => {
+                                    const cursor = e.target.result;
+                                    if (cursor) {
+                                        const msg = cursor.value;
+                                        // Verificar si el mensaje pertenece a este chat
+                                        const msgChatId = msg?.remote?.remote || msg?.remote || msg?.id?.remote || '';
+                                        const fromMe = msg?.id?.fromMe || msg?.fromMe || false;
+                                        const isMatch = typeof msgChatId === 'string' ? msgChatId.includes(chatId) : (msgChatId?._serialized || '').includes(chatId);
+                                        
+                                        if (isMatch || (msg?.id && typeof msg.id === 'string' && msg.id.includes(chatId))) {
+                                            if (msg.body || msg.text) {
+                                                msgs.unshift({
+                                                    fromMe: fromMe,
+                                                    body: msg.body || msg.text || ''
+                                                });
+                                            }
+                                        }
+                                        if (msgs.length >= limit) {
+                                            return resolve(msgs);
+                                        }
+                                        cursor.continue();
+                                    } else {
+                                        resolve(msgs);
+                                    }
+                                };
+                                cursorRequest.onerror = () => resolve([]);
+                            };
+                            request.onerror = () => resolve([]);
+                        } catch (err) {
+                            resolve([]);
+                        }
+                    });
+                }, descriptor.id, SCAN_MESSAGES);
 
                 let chatText = '';
                 let containsKeywords = false;
@@ -260,9 +310,9 @@ async function iniciarEscaneo(intento = 1) {
                     }
                 }
 
-                if (containsKeywords) {
+                if (containsKeywords && chatText) {
                     console.log(`Enviando historial de ${descriptor.user} a Next.js para análisis...`);
-                    await enviarANextJS(descriptor.user, descriptor.name || chat.name, chatText);
+                    await enviarANextJS(descriptor.user, descriptor.name || descriptor.user, chatText);
                     enviados++;
                 }
             } catch (error) {
