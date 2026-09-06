@@ -166,48 +166,37 @@ function esChatDeCliente(chat) {
 // liviana, y despues se trae cada chat por separado.
 async function listarChats() {
     try {
-        const chats = await client.getChats();
-        return chats.filter(esChatDeCliente).map(chat => ({
-            id: chat.id._serialized, user: chat.id.user, name: chat.name || '', timestamp: chat.timestamp || 0,
-        }));
+        // En cuentas con muchos chats, client.getChats() intenta enviar objetos masivos
+        // desde el navegador hacia Node y choca (Puppeteer bridge limit).
+        // Hacemos el mapeo dentro del navegador para traer solo los IDs y timestamps.
+        const chatsLivianos = await client.pupPage.evaluate(() => {
+            try {
+                if (!window.WWebJS) return [];
+                // getChats() original de WWebJS
+                const chats = window.WWebJS.getChats();
+                return chats.map(chat => ({
+                    id: chat?.id?._serialized || '',
+                    user: chat?.id?.user || '',
+                    server: chat?.id?.server || '',
+                    isGroup: !!chat?.isGroup,
+                    name: chat?.name || '',
+                    timestamp: Number(chat?.timestamp || chat?.t || 0)
+                }));
+            } catch (err) {
+                return [{ error: err.message || 'Error WWebJS' }];
+            }
+        });
+
+        if (chatsLivianos.length > 0 && chatsLivianos[0].error) {
+            console.error('[WhatsApp] Fallo al extraer chats con WWebJS:', chatsLivianos[0].error);
+            return [];
+        }
+
+        return chatsLivianos
+            .filter(chat => !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user));
     } catch (error) {
-        console.error('[WhatsApp] getChats fallo, uso el listado liviano de identificadores:', error?.message || error);
-        const crudos = await client.pupPage.evaluate(() => {
-            const hasStore = !!window.Store;
-            const hasChat = !!window.Store?.Chat;
-            const hasModelsArray = !!window.Store?.Chat?.getModelsArray;
-            console.log('Store check:', { hasStore, hasChat, hasModelsArray });
-
-            const modelos = window.Store?.Chat?.getModelsArray?.() || [];
-            return modelos.map(chat => {
-                try {
-                    const id = chat?.id;
-                    return {
-                        id: id?._serialized ?? '',
-                        user: id?.user ?? '',
-                        server: id?.server ?? '',
-                        isGroup: !!chat?.isGroup,
-                        name: '',
-                        timestamp: Number(chat?.t || 0),
-                    };
-                } catch {
-                    return null;
-                }
-            }).filter(Boolean);
-        });
-        
-        // Let's also retrieve the console logs from the page if possible, or just return the check info.
-        const storeCheck = await client.pupPage.evaluate(() => {
-            return {
-                hasStore: !!window.Store,
-                hasChat: !!window.Store?.Chat,
-                hasModelsArray: !!window.Store?.Chat?.getModelsArray,
-                storeKeys: window.Store ? Object.keys(window.Store) : []
-            };
-        });
-        console.log('[WhatsApp] Debug Store:', storeCheck);
-
-        return crudos.filter(chat => !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user));
+        console.error('[WhatsApp] getChats fallo por completo:', error?.message || error);
+        return [];
     }
 }
 
