@@ -247,56 +247,7 @@ async function iniciarEscaneo(intento = 1) {
             try {
                 // client.getChatById y fetchMessages de WWebJS también están rotos por el mismo cambio
                 // de WhatsApp en IDBObjectStore. Leemos los mensajes directamente desde IndexedDB.
-                const messages = await client.pupPage.evaluate(async (chatId, limit) => {
-                    return new Promise((resolve) => {
-                        try {
-                            const request = indexedDB.open('model-storage');
-                            request.onsuccess = (event) => {
-                                const db = event.target.result;
-                                if (!db.objectStoreNames.contains('message')) {
-                                    return resolve([]);
-                                }
-                                const tx = db.transaction('message', 'readonly');
-                                const store = tx.objectStore('message');
-                                
-                                // Whatsapp Web indexa los mensajes por "chat" o "remote" dependiendo de la version.
-                                // Si no sabemos el index, podemos iterar con un cursor hacia atras.
-                                const msgs = [];
-                                const cursorRequest = store.openCursor(null, 'prev');
-                                
-                                cursorRequest.onsuccess = (e) => {
-                                    const cursor = e.target.result;
-                                    if (cursor) {
-                                        const msg = cursor.value;
-                                        // Verificar si el mensaje pertenece a este chat
-                                        const msgChatId = msg?.remote?.remote || msg?.remote || msg?.id?.remote || '';
-                                        const fromMe = msg?.id?.fromMe || msg?.fromMe || false;
-                                        const isMatch = typeof msgChatId === 'string' ? msgChatId.includes(chatId) : (msgChatId?._serialized || '').includes(chatId);
-                                        
-                                        if (isMatch || (msg?.id && typeof msg.id === 'string' && msg.id.includes(chatId))) {
-                                            if (msg.body || msg.text) {
-                                                msgs.unshift({
-                                                    fromMe: fromMe,
-                                                    body: msg.body || msg.text || ''
-                                                });
-                                            }
-                                        }
-                                        if (msgs.length >= limit) {
-                                            return resolve(msgs);
-                                        }
-                                        cursor.continue();
-                                    } else {
-                                        resolve(msgs);
-                                    }
-                                };
-                                cursorRequest.onerror = () => resolve([]);
-                            };
-                            request.onerror = () => resolve([]);
-                        } catch (err) {
-                            resolve([]);
-                        }
-                    });
-                }, descriptor.id, SCAN_MESSAGES);
+                const messages = await obtenerMensajesDesdeIDB(descriptor.id, SCAN_MESSAGES);
 
                 let chatText = '';
                 let containsKeywords = false;
@@ -335,6 +286,56 @@ async function iniciarEscaneo(intento = 1) {
     }
 }
 
+async function obtenerMensajesDesdeIDB(chatId, limit) {
+    return await client.pupPage.evaluate(async (id, max) => {
+        return new Promise((resolve) => {
+            try {
+                const request = indexedDB.open('model-storage');
+                request.onsuccess = (event) => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains('message')) {
+                        return resolve([]);
+                    }
+                    const tx = db.transaction('message', 'readonly');
+                    const store = tx.objectStore('message');
+                    
+                    const msgs = [];
+                    const cursorRequest = store.openCursor(null, 'prev');
+                    
+                    cursorRequest.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor) {
+                            const msg = cursor.value;
+                            const msgChatId = msg?.remote?.remote || msg?.remote || msg?.id?.remote || '';
+                            const fromMe = msg?.id?.fromMe || msg?.fromMe || false;
+                            const isMatch = typeof msgChatId === 'string' ? msgChatId.includes(id) : (msgChatId?._serialized || '').includes(id);
+                            
+                            if (isMatch || (msg?.id && typeof msg.id === 'string' && msg.id.includes(id))) {
+                                if (msg.body || msg.text) {
+                                    msgs.unshift({
+                                        fromMe: fromMe,
+                                        body: msg.body || msg.text || ''
+                                    });
+                                }
+                            }
+                            if (msgs.length >= max) {
+                                return resolve(msgs);
+                            }
+                            cursor.continue();
+                        } else {
+                            resolve(msgs);
+                        }
+                    };
+                    cursorRequest.onerror = () => resolve([]);
+                };
+                request.onerror = () => resolve([]);
+            } catch (err) {
+                resolve([]);
+            }
+        });
+    }, chatId, limit);
+}
+
 // Escuchar nuevos mensajes en tiempo real
 client.on('message', async (msg) => {
     // Un mensaje que no se puede leer no debe tumbar al bot ni cortar el barrido.
@@ -344,18 +345,22 @@ client.on('message', async (msg) => {
         // Si un mensaje nuevo contiene las palabras clave, podemos procesar el chat nuevamente
         if (!keywordMatcher.matches(body)) return;
 
-        const chat = await msg.getChat();
-        if (!esChatDeCliente(chat)) return;
+        const chatId = msg.from;
+        if (!chatId || chatId.includes('@g.us') || !chatId.includes('@c.us')) return;
 
-        console.log(`\n¡Nuevo mensaje relevante de ${chat.name || chat.id.user}! Enviando a Next.js...`);
-        const messages = await chat.fetchMessages({ limit: 20 });
+        const user = chatId.split('@')[0];
+        console.log(`\n¡Nuevo mensaje relevante de ${user}! Enviando a Next.js...`);
+        
+        // Usar nuestra extraccion por IndexedDB porque msg.getChat() falla
+        const messages = await obtenerMensajesDesdeIDB(chatId, 20);
 
         let chatText = '';
         for (const m of messages) {
             chatText += `[${m.fromMe ? 'Vendedor' : 'Cliente'}]: ${m.body}\n`;
         }
-
-        await enviarANextJS(chat.id.user, chat.name, chatText);
+        
+        const contactName = msg._data?.notifyName || msg.notifyName || user;
+        await enviarANextJS(user, contactName, chatText);
     } catch (error) {
         console.error('[WhatsApp] No se pudo procesar un mensaje entrante:', error?.message || error);
     }
