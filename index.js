@@ -46,6 +46,25 @@ try {
     console.error('[WhatsApp] No se pudieron revisar las cerraduras de Chrome:', error);
 }
 
+// Al cerrar sesion desde el telefono, la sesion guardada queda invalidada: si sigue en disco,
+// WhatsApp la rechaza en cada arranque y el bot nunca llega a mostrar un QR nuevo. Se borra
+// el contenido, no la carpeta: en Railway esa ruta es el punto de montaje del volumen.
+function borrarSesionGuardada() {
+    try {
+        if (!existsSync(AUTH_PATH)) return;
+        for (const entrada of readdirSync(AUTH_PATH)) rmSync(join(AUTH_PATH, entrada), { recursive: true, force: true });
+        console.log('[WhatsApp] Sesion guardada borrada. El proximo arranque pide un QR nuevo.');
+    } catch (error) {
+        console.error('[WhatsApp] No se pudo borrar la sesion guardada:', error);
+    }
+}
+
+// Salida de emergencia: con RESET_SESSION=1 en Railway, el arranque parte de cero y pide QR.
+if (process.env.RESET_SESSION === '1') {
+    console.log('[WhatsApp] RESET_SESSION activo: se descarta la sesion guardada antes de arrancar.');
+    borrarSesionGuardada();
+}
+
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
     // Identifica claramente esta instancia y resuelve una sesión web duplicada
@@ -104,10 +123,23 @@ client.on('authenticated', () => {
     console.log('[WhatsApp] Sesion autenticada. Esperando que termine de sincronizar.');
 });
 
-client.on('auth_failure', (message) => {
+// Las credenciales guardadas ya no sirven: conservarlas repite el mismo error en cada arranque.
+client.on('auth_failure', async (message) => {
     connectionStatus = 'error de autenticacion';
     console.error('[WhatsApp] Error de autenticacion:', message);
+    await cerrarNavegador();
+    borrarSesionGuardada();
+    process.exit(1);
 });
+
+// client.destroy() puede quedarse colgado si Chrome ya se estaba cerrando por el logout.
+async function cerrarNavegador(limite = 10000) {
+    try {
+        await Promise.race([client.destroy(), new Promise(resolve => setTimeout(resolve, limite))]);
+    } catch {
+        // El navegador ya puede haberse cerrado solo al desvincular.
+    }
+}
 
 // Una desconexion no debe matar el proceso: con la sesion en disco se recupera sola.
 // Ante LOGOUT la sesion guardada ya no sirve y el navegador se esta cerrando: hay que
@@ -123,13 +155,13 @@ client.on('disconnected', async (reason) => {
     // ("Execution context was destroyed"). Conviene salir y dejar que arranque un proceso limpio.
     if (String(reason).toUpperCase() === 'LOGOUT') {
         console.error('[WhatsApp] La sesion fue cerrada desde el telefono. Reiniciando para pedir un QR nuevo.');
-        return process.exit(0);
+        await cerrarNavegador();
+        borrarSesionGuardada();
+        // Railway solo reinicia el servicio cuando el proceso termina con error. Saliendo con 0
+        // el contenedor quedaba apagado y el dashboard se quedaba sin bot al que pedirle el QR.
+        return process.exit(1);
     }
-    try {
-        await client.destroy();
-    } catch {
-        // El navegador ya puede haberse cerrado solo al desvincular.
-    }
+    await cerrarNavegador();
     await new Promise(resolve => setTimeout(resolve, 10000));
     try {
         await client.initialize();
