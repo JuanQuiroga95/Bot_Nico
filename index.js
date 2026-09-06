@@ -155,6 +155,29 @@ function esChatDeCliente(chat) {
     return !chat?.isGroup && chat?.id?.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat?.id?.user ?? '');
 }
 
+// getChats() serializa todas las conversaciones en una sola operacion dentro del navegador
+// y en cuentas grandes eso falla. Si pasa, se pide solo la lista de identificadores, que es
+// liviana, y despues se trae cada chat por separado.
+async function listarChats() {
+    try {
+        const chats = await client.getChats();
+        return chats.filter(esChatDeCliente).map(chat => ({
+            id: chat.id._serialized, user: chat.id.user, name: chat.name || '', timestamp: chat.timestamp || 0,
+        }));
+    } catch (error) {
+        console.error('[WhatsApp] getChats fallo, uso el listado liviano de identificadores:', error?.message || error);
+        const crudos = await client.pupPage.evaluate(() => window.Store.Chat.getModelsArray().map(chat => ({
+            id: chat.id?._serialized ?? '',
+            user: chat.id?.user ?? '',
+            server: chat.id?.server ?? '',
+            isGroup: !!chat.isGroup,
+            name: chat.formattedTitle || chat.name || '',
+            timestamp: chat.t || 0,
+        })));
+        return crudos.filter(chat => !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user));
+    }
+}
+
 // El escaneo corre una sola vez por proceso: al reconectar no se repite.
 let escaneoHecho = false;
 client.on('ready', () => {
@@ -171,16 +194,19 @@ async function iniciarEscaneo(intento = 1) {
         console.log('Obteniendo chats...');
         const desde = Date.now() / 1000 - SCAN_DAYS * 86400;
         // Solo conversaciones individuales con actividad reciente: el resto no es recuperable.
-        const chats = (await client.getChats())
-            .filter(chat => esChatDeCliente(chat) && (chat.timestamp || 0) >= desde)
+        const todos = await listarChats();
+        const chats = todos
+            .filter(chat => (chat.timestamp || 0) >= desde)
+            .sort((a, b) => b.timestamp - a.timestamp)
             .slice(0, SCAN_CHATS);
-        console.log(`Analizando ${chats.length} chats de los ultimos ${SCAN_DAYS} dias.`);
+        console.log(`Analizando ${chats.length} de ${todos.length} chats, de los ultimos ${SCAN_DAYS} dias.`);
 
         let revisados = 0;
         let enviados = 0;
-        for (const chat of chats) {
+        for (const descriptor of chats) {
             // Un chat ilegible no puede cortar el barrido de todos los demas.
             try {
+                const chat = await client.getChatById(descriptor.id);
                 const messages = await chat.fetchMessages({ limit: SCAN_MESSAGES });
 
                 let chatText = '';
@@ -196,12 +222,12 @@ async function iniciarEscaneo(intento = 1) {
                 }
 
                 if (containsKeywords) {
-                    console.log(`Enviando historial de ${chat.id.user} a Next.js para análisis...`);
-                    await enviarANextJS(chat.id.user, chat.name, chatText);
+                    console.log(`Enviando historial de ${descriptor.user} a Next.js para análisis...`);
+                    await enviarANextJS(descriptor.user, descriptor.name || chat.name, chatText);
                     enviados++;
                 }
             } catch (error) {
-                console.error(`No se pudo leer el chat de ${chat.id?.user}:`, error?.message || error);
+                console.error(`No se pudo leer el chat de ${descriptor.user}:`, error?.message || error);
             }
             revisados++;
             if (revisados % 25 === 0) console.log(`Barrido: ${revisados} de ${chats.length} chats revisados, ${enviados} enviados a analizar.`);
