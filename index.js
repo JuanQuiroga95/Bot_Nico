@@ -173,10 +173,13 @@ async function listarChats() {
     } catch (error) {
         console.error('[WhatsApp] getChats fallo, uso el listado liviano de identificadores:', error?.message || error);
         const crudos = await client.pupPage.evaluate(() => {
+            const hasStore = !!window.Store;
+            const hasChat = !!window.Store?.Chat;
+            const hasModelsArray = !!window.Store?.Chat?.getModelsArray;
+            console.log('Store check:', { hasStore, hasChat, hasModelsArray });
+
             const modelos = window.Store?.Chat?.getModelsArray?.() || [];
             return modelos.map(chat => {
-                // Algunas versiones de WhatsApp Web lanzan TypeError al leer
-                // getters como formattedTitle durante la sincronización inicial.
                 try {
                     const id = chat?.id;
                     return {
@@ -192,6 +195,18 @@ async function listarChats() {
                 }
             }).filter(Boolean);
         });
+        
+        // Let's also retrieve the console logs from the page if possible, or just return the check info.
+        const storeCheck = await client.pupPage.evaluate(() => {
+            return {
+                hasStore: !!window.Store,
+                hasChat: !!window.Store?.Chat,
+                hasModelsArray: !!window.Store?.Chat?.getModelsArray,
+                storeKeys: window.Store ? Object.keys(window.Store) : []
+            };
+        });
+        console.log('[WhatsApp] Debug Store:', storeCheck);
+
         return crudos.filter(chat => !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user));
     }
 }
