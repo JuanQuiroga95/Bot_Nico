@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -11,8 +11,8 @@ model Lead {
   id            String   @id @default(cuid())
   phoneNumber   String   @unique
   name          String?
-  lastHistory   String   @db.Text
-  aiReasoning   String?  @db.Text
+  lastHistory   String
+  aiReasoning   String?
   interestedIn  String?
   status        String   @default("PENDING_CONTACT") // PENDING_CONTACT, CONTACTED, CONVERTED
   createdAt     DateTime @default(now())
