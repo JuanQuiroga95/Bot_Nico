@@ -260,6 +260,11 @@ async function iniciarEscaneo(intento = 1) {
                         containsKeywords = true;
                     }
                 }
+                
+                console.log(`[DEBUG-HISTORIAL] Chat: ${descriptor.id} | Mensajes: ${messages.length} | Match: ${containsKeywords}`);
+                if (messages.length > 0) {
+                    console.log(`[DEBUG-TEXTO]\n${chatText}`);
+                }
 
                 if (containsKeywords && chatText) {
                     console.log(`Enviando historial de ${descriptor.user} a Next.js para análisis...`);
@@ -311,10 +316,11 @@ async function obtenerMensajesDesdeIDB(chatId, limit) {
                             const isMatch = typeof msgChatId === 'string' ? msgChatId.includes(id) : (msgChatId?._serialized || '').includes(id);
                             
                             if (isMatch || (msg?.id && typeof msg.id === 'string' && msg.id.includes(id))) {
-                                if (msg.body || msg.text) {
+                                const bodyStr = msg.body || msg.text || msg?.message?.conversation || msg?.message?.extendedTextMessage?.text || '';
+                                if (bodyStr) {
                                     msgs.unshift({
                                         fromMe: fromMe,
-                                        body: msg.body || msg.text || ''
+                                        body: bodyStr
                                     });
                                 }
                             }
@@ -341,9 +347,13 @@ client.on('message', async (msg) => {
     // Un mensaje que no se puede leer no debe tumbar al bot ni cortar el barrido.
     try {
         const body = (msg.body || '').toLowerCase();
+        console.log(`[DEBUG] Recibido mensaje de ${msg.from}: "${body}"`);
 
         // Si un mensaje nuevo contiene las palabras clave, podemos procesar el chat nuevamente
-        if (!keywordMatcher.matches(body)) return;
+        if (!keywordMatcher.matches(body)) {
+            console.log(`[DEBUG] El mensaje no contiene palabras clave. Ignorando.`);
+            return;
+        }
 
         const chatId = msg.from;
         if (!chatId || chatId.includes('@g.us') || !chatId.includes('@c.us')) return;
@@ -358,6 +368,8 @@ client.on('message', async (msg) => {
         for (const m of messages) {
             chatText += `[${m.fromMe ? 'Vendedor' : 'Cliente'}]: ${m.body}\n`;
         }
+        
+        console.log(`[DEBUG] Historial extraído de IDB para ${user}:`, chatText || 'Vacio');
         
         const contactName = msg._data?.notifyName || msg.notifyName || user;
         await enviarANextJS(user, contactName, chatText);
