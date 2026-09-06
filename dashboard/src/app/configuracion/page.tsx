@@ -11,7 +11,7 @@ export default async function SettingsPage() {
   try { await prisma.$queryRaw`SELECT 1`; databaseOk = true; } catch { /* Mostrar el estado sin filtrar credenciales. */ }
   const checks = [
     { label: 'Base de datos', ok: databaseOk, detail: databaseOk ? 'Conexión comprobada.' : 'No pudimos conectar. Revisá DATABASE_URL en Vercel.' },
-    { label: 'Análisis de oportunidades', ok: !!process.env.OPENAI_API_KEY, detail: process.env.OPENAI_API_KEY ? 'Clave configurada. La próxima conversación verificará el análisis.' : 'Falta OPENAI_API_KEY en Vercel.' },
+    { label: 'Análisis de oportunidades', ok: !!process.env.GROQ_SECRET_API?.trim(), detail: process.env.GROQ_SECRET_API?.trim() ? 'Groq configurado. La próxima conversación verificará el análisis.' : 'Falta GROQ_SECRET_API en Vercel.' },
     { label: 'Recepción de conversaciones', ok: !!process.env.API_SECRET_TOKEN, detail: process.env.API_SECRET_TOKEN ? 'Token configurado. Debe coincidir con el de Railway.' : 'Falta API_SECRET_TOKEN en Vercel y Railway.' },
   ];
   return <div className="animate-fade-in"><header className="page-header"><div><span className="eyebrow">TU ESPACIO DE TRABAJO</span><h1>Configuración</h1><p className="subtitle">Conectá WhatsApp y ajustá tu forma de trabajar.</p></div><Refresh /></header>

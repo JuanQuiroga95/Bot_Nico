@@ -8,8 +8,14 @@ export const dynamic = 'force-dynamic';
 import { prisma } from '@/lib/prisma';
 
 // La ausencia de una clave se informa sin crear oportunidades simuladas.
-const apiKey = process.env.OPENAI_API_KEY;
-const openai = apiKey ? new OpenAI({ apiKey }) : null;
+const apiKey = process.env.GROQ_SECRET_API?.trim();
+// Groq expone una API compatible con el cliente ya instalado.
+const groq = apiKey ? new OpenAI({
+  apiKey,
+  baseURL: 'https://api.groq.com/openai/v1',
+  timeout: 45000,
+  maxRetries: 2,
+}) : null;
 
 export async function POST(req: Request) {
   try {
@@ -31,14 +37,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Faltan datos requeridos (phoneNumber o history)' }, { status: 400 });
     }
 
-    if (!openai) return NextResponse.json({ error: 'Falta configurar OPENAI_API_KEY.' }, { status: 503 });
+    if (!groq) return NextResponse.json({ error: 'Falta configurar GROQ_SECRET_API en Vercel.' }, { status: 503 });
     let aiResponse: { isRecoverable: boolean; reason: string; lastInteractedProduct: string | null };
 
     // 2. Procesamiento con IA (Si hay key)
     {
-      console.log(`Llamando a OpenAI para procesar el chat de ${phoneNumber}...`);
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+      console.log(`Llamando a Groq para procesar el chat de ${phoneNumber}...`);
+      const completion = await groq.chat.completions.create({
+        model: process.env.GROQ_MODEL?.trim() || 'openai/gpt-oss-20b',
         messages: [
           {
             role: "system",
@@ -61,9 +67,9 @@ export async function POST(req: Request) {
       });
 
       try {
-        aiResponse = JSON.parse(completion.choices[0].message.content || '{}');
+        aiResponse = JSON.parse(completion.choices[0]?.message.content || '{}');
       } catch (e) {
-         console.error('Error parseando JSON de OpenAI:', e);
+         console.error('Error parseando JSON de Groq:', e);
          return NextResponse.json({ error: 'El análisis no devolvió una respuesta válida.' }, { status: 502 });
       }
     }
@@ -100,6 +106,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ success: true, action: 'IGNORED_BY_AI' });
 
   } catch (error) {
+    if (error instanceof OpenAI.APIError) {
+      console.error('Error de Groq:', { status: error.status, code: error.code });
+      const message = error.status === 429
+        ? 'Groq alcanzó su límite de uso. El chat no se guardó; reintentá más tarde.'
+        : error.status === 401 || error.status === 403
+          ? 'Groq rechazó el acceso. Revisá GROQ_SECRET_API y los permisos del modelo en Vercel/Groq.'
+          : 'No se pudo completar el análisis con Groq. Revisá el servicio y GROQ_MODEL.';
+      return NextResponse.json({ error: message }, { status: error.status === 429 ? 503 : 502 });
+    }
     console.error('Error procesando chat:', error);
     return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 });
   }
