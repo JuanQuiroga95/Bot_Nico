@@ -372,7 +372,13 @@ client.on('message', async (msg) => {
             chatText += `[${m.fromMe ? 'Vendedor' : 'Cliente'}]: ${m.body}\n`;
         }
         
-        console.log(`[DEBUG] Historial extraído de IDB para ${user}:`, chatText || 'Vacio');
+        // WhatsApp Web a veces guarda los mensajes bajo @c.us pero emite el evento con @lid.
+        // Si el historial en IDB no encontró nada, usamos el mensaje actual que acabamos de recibir.
+        if (!chatText.trim()) {
+            chatText = `[Cliente]: ${msg.body}\n`;
+        }
+        
+        console.log(`[DEBUG] Historial a enviar para ${user}:`, chatText);
         
         const contactName = msg._data?.notifyName || msg.notifyName || user;
         await enviarANextJS(user, contactName, chatText);
