@@ -166,14 +166,26 @@ async function listarChats() {
         }));
     } catch (error) {
         console.error('[WhatsApp] getChats fallo, uso el listado liviano de identificadores:', error?.message || error);
-        const crudos = await client.pupPage.evaluate(() => window.Store.Chat.getModelsArray().map(chat => ({
-            id: chat.id?._serialized ?? '',
-            user: chat.id?.user ?? '',
-            server: chat.id?.server ?? '',
-            isGroup: !!chat.isGroup,
-            name: chat.formattedTitle || chat.name || '',
-            timestamp: chat.t || 0,
-        })));
+        const crudos = await client.pupPage.evaluate(() => {
+            const modelos = window.Store?.Chat?.getModelsArray?.() || [];
+            return modelos.map(chat => {
+                // Algunas versiones de WhatsApp Web lanzan TypeError al leer
+                // getters como formattedTitle durante la sincronización inicial.
+                try {
+                    const id = chat?.id;
+                    return {
+                        id: id?._serialized ?? '',
+                        user: id?.user ?? '',
+                        server: id?.server ?? '',
+                        isGroup: !!chat?.isGroup,
+                        name: '',
+                        timestamp: Number(chat?.t || 0),
+                    };
+                } catch {
+                    return null;
+                }
+            }).filter(Boolean);
+        });
         return crudos.filter(chat => !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user));
     }
 }
