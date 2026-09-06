@@ -48,6 +48,12 @@ try {
 
 const client = new Client({
     authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
+    // Identifica claramente esta instancia y resuelve una sesión web duplicada
+    // (por ejemplo, una pestaña de WhatsApp Web abierta en otra computadora).
+    deviceName: 'Nico CRM Bot',
+    browserName: 'Nico CRM',
+    takeoverOnConflict: true,
+    takeoverTimeoutMs: 0,
     puppeteer: {
         // Argumentos necesarios para que Puppeteer funcione en Railway sin interfaz grafica
         // y para que Chrome no gaste memoria en funciones que aqui no se usan.
