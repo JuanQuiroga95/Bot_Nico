@@ -27,6 +27,10 @@ export async function logout() {
   (await cookies()).delete('nico-session');
   redirect('/login');
 }
+// Imagenes permitidas en una campana. Un PDF o un video cambian como lo recibe el cliente.
+const tiposDeImagen = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const maximoImagen = 8 * 1024 * 1024;
+
 // Encola la campaña en el bot y recién entonces marca los leads como contactados: si el
 // bot no responde, nada cambia y se puede reintentar sin perder el estado real.
 export async function startCampaign(_previous: ActionResult, form: FormData): Promise<ActionResult> {
@@ -34,30 +38,57 @@ export async function startCampaign(_previous: ActionResult, form: FormData): Pr
   const base = process.env.BOT_STATUS_URL;
   const token = process.env.API_SECRET_TOKEN;
   if (!base || !token) return { error: 'Falta configurar BOT_STATUS_URL o API_SECRET_TOKEN en Vercel.' };
+
   const template = String(form.get('message') ?? '').trim();
-  if (template.length < 10 || template.length > 1000) return { error: 'Escribí un mensaje de entre 10 y 1000 caracteres.' };
-  const limit = Math.max(1, Math.min(200, Number.parseInt(String(form.get('limit')), 10) || 40));
+  const archivo = form.get('image');
+  const imagen = archivo instanceof File && archivo.size > 0 ? archivo : null;
+  // Con imagen el texto es el epígrafe y puede ir vacío; sin imagen tiene que haber texto.
+  if (!imagen && (template.length < 10 || template.length > 1000)) return { error: 'Escribí un mensaje de entre 10 y 1000 caracteres.' };
+  if (template.length > 1000) return { error: 'El mensaje no puede superar los 1000 caracteres.' };
+  if (imagen && !tiposDeImagen.includes(imagen.type)) return { error: 'La imagen tiene que ser JPG, PNG, WEBP o GIF.' };
+  if (imagen && imagen.size > maximoImagen) return { error: 'La imagen no puede pesar más de 8 MB.' };
+
+  // Los destinatarios los elige el vendedor: nunca se manda a toda la base por defecto.
+  const ids = form.getAll('ids').map(value => String(value)).filter(Boolean).slice(0, 200);
+  if (!ids.length) return { error: 'Elegí al menos un contacto de la lista.' };
+
   const leads = await prisma.lead.findMany({
-    where: { status: 'PENDING_CONTACT' }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: limit,
+    where: { id: { in: ids } },
     select: { id: true, name: true, phoneNumber: true, interestedIn: true },
   });
   const enviables = leads.filter(lead => normalizePhone(lead.phoneNumber));
-  if (!enviables.length) return { error: 'No hay contactos pendientes con un teléfono válido.' };
+  if (!enviables.length) return { error: 'Ninguno de los contactos elegidos tiene un teléfono válido.' };
+
+  let media: { mimetype: string; data: string; filename: string } | null = null;
+  if (imagen) {
+    const bytes = Buffer.from(await imagen.arrayBuffer());
+    media = { mimetype: imagen.type, data: bytes.toString('base64'), filename: imagen.name || 'imagen.jpg' };
+  }
+
   try {
     const url = new URL('/send', base);
     if (url.protocol !== 'https:' && !(process.env.NODE_ENV !== 'production' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Invalid bot URL');
     const response = await fetch(url, {
       method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: enviables.map(lead => ({ phoneNumber: lead.phoneNumber, message: renderMessage(template, lead) })) }),
-      cache: 'no-store', signal: AbortSignal.timeout(10000), redirect: 'error',
+      body: JSON.stringify({ items: enviables.map(lead => ({ phoneNumber: lead.phoneNumber, message: renderMessage(template, lead) })), media }),
+      // Una imagen de varios megabytes tarda más en subir que un texto suelto.
+      cache: 'no-store', signal: AbortSignal.timeout(media ? 60000 : 10000), redirect: 'error',
     });
-    if (!response.ok) return { error: response.status === 401 ? 'El API_SECRET_TOKEN de Vercel no coincide con el de Railway.' : 'El bot rechazó la campaña. Revisá su despliegue.' };
+    if (!response.ok) {
+      const detalle = await response.json().catch(() => null);
+      return { error: response.status === 401
+        ? 'El API_SECRET_TOKEN de Vercel no coincide con el de Railway.'
+        : detalle?.error || 'El bot rechazó la campaña. Revisá su despliegue.' };
+    }
     const result = await response.json();
-    await prisma.lead.updateMany({ where: { id: { in: enviables.map(lead => lead.id) } }, data: { status: 'CONTACTED' } });
+    await prisma.lead.updateMany({
+      where: { id: { in: enviables.map(lead => lead.id) } },
+      data: { status: 'CONTACTED', lastCampaignAt: new Date() },
+    });
     revalidatePath('/');
     revalidatePath('/leads');
     revalidatePath('/campanas');
-    return { success: `${result.queued} mensajes en cola. Salen de a uno, espaciados, con un tope de ${result.cap} por día.` };
+    return { success: `${result.queued} mensajes en cola${media ? ' con la imagen adjunta' : ''}. Salen de a uno, espaciados, con un tope de ${result.cap} por día.` };
   } catch {
     return { error: 'No pudimos conectar con el bot. Revisá BOT_STATUS_URL y que Railway esté funcionando.' };
   }

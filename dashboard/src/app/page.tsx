@@ -10,7 +10,7 @@ export default async function DashboardPage() {
   const [groups, leads] = await Promise.all([
     prisma.lead.groupBy({ by: ['status'], _count: { _all: true } }),
     prisma.lead.findMany({ orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 8,
-      select: { id: true, name: true, phoneNumber: true, interestedIn: true, aiReasoning: true, status: true, createdAt: true, updatedAt: true } }),
+      select: { id: true, name: true, phoneNumber: true, interestedIn: true, aiReasoning: true, status: true, leadType: true, lastMessageAt: true, createdAt: true } }),
   ]);
   const count = (status: string) => groups.find(group => group.status === status)?._count._all ?? 0;
   const total = groups.reduce((sum, group) => sum + group._count._all, 0);

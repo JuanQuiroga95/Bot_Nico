@@ -267,6 +267,23 @@ tbody tr:hover { background: rgba(255,255,255,.025); }
 .status-contacted { background: #3b82f620; color: #93c5fd; }
 .status-converted { background: #10b98120; color: #6ee7b7; }
 .status-discarded { background: #94a3b818; color: #cbd5e1; }
+.type-oportunidad { background: #6366f120; color: #a5b4fc; }
+.type-dormido { background: #94a3b81f; color: #cbd5e1; }
+/* Lista de destinatarios de una campana: se recorre con scroll para no empujar el formulario. */
+.pick-list { list-style: none; max-height: 340px; overflow-y: auto; border: 1px solid var(--card-border); border-radius: 10px; background: #0f172a66; }
+.pick-list li + li { border-top: 1px solid var(--card-border); }
+.pick-list label { display: flex; align-items: center; gap: 12px; padding: 11px 14px; cursor: pointer; font-size: .88rem; }
+.pick-list label:hover { background: rgba(255,255,255,.03); }
+.pick-list input { width: 18px; min-height: 18px; flex-shrink: 0; accent-color: var(--primary); }
+.pick-name { flex: 1; min-width: 0; font-weight: 600; }
+.pick-name .block { font-weight: 400; margin-top: 3px; }
+.field { display: flex; flex-direction: column; gap: 8px; font-size: .88rem; }
+.field-label { font-size: .88rem; }
+.file-drop { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 18px; border: 1px dashed #3b465a; border-radius: 10px; color: #93c5fd; cursor: pointer; }
+.file-drop:hover { border-color: var(--primary); background: rgba(255,255,255,.02); }
+.file-drop input { display: none; }
+.image-preview { display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap; }
+.image-preview img { max-height: 170px; max-width: 100%; border-radius: 10px; border: 1px solid var(--card-border); }
 .filter-bar { display: flex; gap: 12px; margin-bottom: 28px; flex-wrap: wrap; align-items: center; }
 .search-field { flex: 1; min-width: 200px; position: relative; }
 .search-field svg { position: absolute; top: 14px; left: 14px; color: #94a3b8; }

@@ -2,7 +2,18 @@
 
 ## Despliegue
 
-Vercel usa la carpeta raíz `dashboard`. Railway usa la raíz del repositorio y su Dockerfile. No se requieren cambios en el esquema de la base de datos.
+Vercel usa la carpeta raíz `dashboard`. Railway usa la raíz del repositorio y su Dockerfile.
+
+**Esta versión agrega tres columnas a la tabla `Lead`.** Antes de desplegar, ejecutá esto una vez en la consola SQL de Neon:
+
+```sql
+ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "leadType" TEXT;
+ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "lastMessageAt" TIMESTAMP(3);
+ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "lastCampaignAt" TIMESTAMP(3);
+CREATE INDEX IF NOT EXISTS "Lead_leadType_lastMessageAt_idx" ON "Lead" ("leadType", "lastMessageAt");
+```
+
+Las tres son opcionales, así que los leads ya cargados siguen funcionando sin tocarlos.
 
 Variables privadas de **Vercel**:
 
@@ -15,12 +26,15 @@ Variables privadas de **Vercel**:
 
 Variables de **Railway**:
 
-- `NEXTJS_API_URL`: `https://tu-dashboard.vercel.app/api/process-chat`.
+- `NEXTJS_API_URL`: `https://tu-dashboard.vercel.app/api/process-chat`. El bot deriva de ahí las demás rutas del panel, como `/api/contacts/sync`.
 - `API_SECRET_TOKEN`: el mismo secreto que en Vercel.
 - `PORT`: Railway lo proporciona; el bot escucha en todas las interfaces.
 - `KEYWORDS_EXTRA`: opcional; términos adicionales separados por coma. El bot ya incluye productos de limpieza, insumos y consultas comerciales, con tildes y plurales.
 - `WWEBJS_AUTH_PATH`: recomendada. Sin ella, cada reinicio pierde la vinculación y vuelve a pedir el QR. Montá un volumen en Railway y usá su **ruta de montaje** más `/.wwebjs_auth`; por ejemplo, con el volumen montado en `/bot-data`, el valor es `/bot-data/.wwebjs_auth`. Debe coincidir con la ruta de montaje, no con el nombre del volumen.
-- `SCAN_MESSAGES`, `SCAN_DAYS`, `SCAN_CHATS`: opcionales. Limitan el escaneo inicial a 30 mensajes por chat, 30 días de antigüedad y 150 conversaciones. Para recuperar chats viejos, subilos: `SCAN_DAYS=730`, `SCAN_MESSAGES=50`, `SCAN_CHATS=1000`. El barrido corre una vez por arranque, con una pausa de 2 segundos entre chats.
+- `SCAN_MESSAGES`, `SCAN_DAYS`, `SCAN_CHATS`: opcionales. Limitan el barrido de la agenda a 60 mensajes por chat, 730 días de antigüedad y 1000 conversaciones. Bajalos si Railway reinicia el contenedor por memoria.
+- `INACTIVE_DAYS`: opcional, 30 días. Un contacto entra en la lista de recontacto cuando hace más de esto que no escribe.
+- `SWEEP_HOURS`: opcional, 12 horas. Cada cuánto el bot vuelve a revisar la agenda. El primer barrido corre un minuto después de conectarse.
+- `DEBUG_CHATS=1`: opcional. Escribe en el log una línea por chat revisado. Dejalo apagado: con miles de chats inunda los logs.
 - `SEND_DAILY_CAP`: opcional, 40 por día. Tope de mensajes de reactivación. Lo que exceda queda en cola y sigue al día siguiente.
 
 Después de modificar variables, desplegá nuevamente el servicio correspondiente. Generá un dominio público para el bot y usalo en BOT_STATUS_URL. `/health` comprueba el servidor HTTP, no la conexión con WhatsApp. `/status` exige el token privado. El navegador accede al QR por Vercel con su sesión, sin conocer ese token.
@@ -29,10 +43,10 @@ Después de modificar variables, desplegá nuevamente el servicio correspondient
 
 1. Ingresar en `/login` con el usuario y contraseña.
 2. Abrir Configuración y escanear el QR desde Dispositivos vinculados de WhatsApp Business. Esperar «WhatsApp conectado».
-3. Enviar una consulta desde otro teléfono. El bot también examina conversaciones anteriores al iniciar.
+3. Enviar una consulta desde otro teléfono. Aparte, cada `SWEEP_HOURS` el bot recorre la agenda entera y carga en Campañas a los contactos que hace más de `INACTIVE_DAYS` que no escriben. Solo entran conversaciones en las que la persona respondió alguna vez.
 4. En Leads, buscar por nombre, teléfono o producto; filtrar por estado; abrir la ficha y guardar el seguimiento.
 5. «Abrir WhatsApp» prepara un borrador; el usuario confirma el envío. No cambia automáticamente el estado.
-6. En Campañas se escribe un mensaje único, con `{nombre}` y `{producto}`, y se elige cuántos contactos pendientes recibirlo. Se toman los más antiguos primero. El bot los envía de a uno, con pausas de 40 a 120 segundos, hasta el tope diario; el resto queda en cola. Los contactos pasan a «Contactado» al encolarse y, cuando responden, el bot detecta la respuesta como cualquier mensaje nuevo. Enviar solo a quienes ya escribieron alguna vez: la mensajería masiva a desconocidos hace que WhatsApp suspenda la cuenta.
+6. En Campañas aparece la lista de contactos sin actividad, del más olvidado al más reciente. Se elige el corte de antigüedad (1 mes a 1 año), se marcan uno por uno o con «Seleccionar todos», se escribe el mensaje con `{nombre}` y `{producto}`, y opcionalmente se adjunta una imagen (JPG, PNG, WEBP o GIF de hasta 8 MB; el texto viaja como epígrafe). No se envía nada que no esté marcado. El bot los manda de a uno, con pausas de 40 a 120 segundos, hasta el tope diario; el resto queda en cola. Los contactos pasan a «Contactado» al encolarse y, cuando responden, el bot detecta la respuesta como cualquier mensaje nuevo. Enviar solo a quienes ya escribieron alguna vez: la mensajería masiva a desconocidos hace que WhatsApp suspenda la cuenta.
 6. Usar «Recuperado» para ventas concretadas. «Descartado» conserva el historial.
 7. Las preferencias de mensaje y actualización automática se guardan en el navegador. Los leads y estados se guardan en PostgreSQL.
 

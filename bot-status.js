@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { normalizeMedia } from './campaign.js';
 const require = createRequire(import.meta.url);
 // Reutiliza el mismo codificador que qrcode-terminal; sin servicios externos.
 const QRCode = require('qrcode-terminal/vendor/QRCode');
@@ -56,12 +57,16 @@ export function createBotStatusServer(client, { token = '', keywords = [], campa
             let body = '';
             for await (const chunk of request) {
                 body += chunk;
-                if (body.length > 200000) return send(413, { error: 'Payload too large' });
+                // El tope alto es por la imagen en base64; el texto solo nunca se acerca.
+                if (body.length > 16000000) return send(413, { error: 'Payload too large' });
             }
-            let items;
-            try { items = JSON.parse(body || '{}').items; } catch { return send(400, { error: 'Invalid JSON' }); }
+            let payload;
+            try { payload = JSON.parse(body || '{}'); } catch { return send(400, { error: 'Invalid JSON' }); }
+            const items = payload.items;
             if (!Array.isArray(items) || items.length > 200) return send(400, { error: 'Invalid items' });
-            return send(200, { queued: campaign.enqueue(items), ...campaign.stats() });
+            // Una imagen invalida no se ignora en silencio: el vendedor cree que la mando.
+            if (payload.media && !normalizeMedia(payload.media)) return send(400, { error: 'La imagen no es valida. Usá JPG, PNG, WEBP o GIF de hasta 8 MB.' });
+            return send(200, { queued: campaign.enqueue(items, payload.media ?? null), ...campaign.stats() });
         }
         if (request.method !== 'GET') { response.setHeader('Allow', 'GET, POST'); return send(405, { error: 'Method not allowed' }); }
         if (request.url !== '/status') return send(404, { error: 'Not found' });

@@ -1,5 +1,5 @@
 import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth } = pkg;
+const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode-terminal';
 import axios from 'axios';
 import dotenv from 'dotenv';
@@ -18,9 +18,18 @@ const keywordMatcher = createKeywordMatcher(process.env.KEYWORDS_EXTRA || '');
 console.log(`[WhatsApp] Deteccion activa con ${keywordMatcher.terms.length} palabras y frases comerciales.`);
 
 // Limites del escaneo inicial. Bajarlos si Railway reinicia el contenedor por memoria.
-const SCAN_MESSAGES = Number(process.env.SCAN_MESSAGES) || 30;
-const SCAN_DAYS = Number(process.env.SCAN_DAYS) || 30;
-const SCAN_CHATS = Number(process.env.SCAN_CHATS) || 150;
+// Por defecto se barre el historial de dos anos: es lo que hace falta para encontrar
+// clientes viejos que dejaron de comprar, no solo consultas del ultimo mes.
+const SCAN_MESSAGES = Number(process.env.SCAN_MESSAGES) || 60;
+const SCAN_DAYS = Number(process.env.SCAN_DAYS) || 730;
+const SCAN_CHATS = Number(process.env.SCAN_CHATS) || 1000;
+// El volcado del texto de cada chat sirve para depurar, pero con miles de mensajes
+// inunda los logs de Railway y deja conversaciones de clientes escritas ahi.
+const DEBUG_CHATS = process.env.DEBUG_CHATS === '1';
+// Un contacto con el que no se habla hace mas de esto es al que hay que volver a tocar.
+const INACTIVE_DAYS = Number(process.env.INACTIVE_DAYS) || 30;
+// Cada cuanto se vuelve a revisar la agenda. Corre solo: nadie tiene que pedirlo.
+const SWEEP_HOURS = Number(process.env.SWEEP_HOURS) || 12;
 
 // Sin un volumen montado en esta ruta, cada despliegue vuelve a pedir el QR.
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth';
@@ -91,9 +100,11 @@ const client = new Client({
 // Los envios de reactivacion salen por el mismo WhatsApp vinculado. Si todavia no esta
 // conectado, la cola espera en lugar de perder mensajes.
 let whatsappListo = false;
-const campaign = createCampaign(async (phoneNumber, message) => {
-    await client.sendMessage(phoneNumber + '@c.us', message);
-    console.log('[Campana] Mensaje enviado a', phoneNumber);
+const campaign = createCampaign(async (phoneNumber, message, media) => {
+    // Con imagen el texto viaja como epigrafe: llega un solo mensaje, no dos.
+    if (media) await client.sendMessage(phoneNumber + '@c.us', new MessageMedia(media.mimetype, media.data, media.filename), { caption: message });
+    else await client.sendMessage(phoneNumber + '@c.us', message);
+    console.log('[Campana] Mensaje enviado a', phoneNumber, media ? '(con imagen)' : '');
 }, { cap: Number(process.env.SEND_DAILY_CAP) || 40, canSend: () => whatsappListo });
 // Retoma la cola cuando se libera el tope diario o vuelve la conexion.
 setInterval(() => campaign.pump(), 1800000).unref();
@@ -190,16 +201,38 @@ client.on('qr', (qr) => {
     qrcode.generate(qr, { small: true });
 });
 
-// WhatsApp expone como chats a los estados (status@broadcast), los grupos y los canales.
-// Solo las conversaciones individuales tienen un telefono al que volver a escribir.
-function esChatDeCliente(chat) {
-    return !chat?.isGroup && chat?.id?.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat?.id?.user ?? '');
+// client.getChats() serializa cada conversacion entera y basta con que una sola este rota
+// para que se caiga la lista completa. Se leen a mano los cuatro campos que se necesitan
+// desde el mismo Store que usa WhatsApp Web, sin pasar por esa serializacion.
+async function listarChatsDelStore() {
+    return await client.pupPage.evaluate(() => {
+        const coleccion = window.require?.('WAWebCollections')?.Chat;
+        if (!coleccion?.getModelsArray) return { error: 'El Store de WhatsApp no expone la lista de chats.' };
+        // WhatsApp identifica conversaciones nuevas con un @lid en lugar del telefono.
+        let aTelefono = null;
+        try { aTelefono = window.require('WAWebLidMigrationUtils').toPn; } catch { /* version sin @lid */ }
+        const chats = [];
+        for (const chat of coleccion.getModelsArray()) {
+            // Un chat ilegible no puede cortar el listado de todos los demas.
+            try {
+                const wid = (chat.id?.server === 'lid' && aTelefono ? aTelefono(chat.id) : null) || chat.id;
+                chats.push({
+                    id: chat.id?._serialized || '',
+                    user: wid?.user || '',
+                    server: wid?.server || '',
+                    isGroup: !!chat.isGroup,
+                    name: chat.formattedTitle || chat.name || '',
+                    timestamp: Number(chat.t || 0),
+                });
+            } catch { /* siguiente chat */ }
+        }
+        return { chats };
+    });
 }
 
-// getChats() serializa todas las conversaciones en una sola operacion dentro del navegador
-// y en cuentas grandes eso falla. Si pasa, se pide solo la lista de identificadores, que es
-// liviana, y despues se trae cada chat por separado.
-async function listarChats() {
+// Respaldo por si una actualizacion de WhatsApp cambia los nombres de sus modulos internos:
+// los mismos datos estan en la base IndexedDB del navegador.
+async function listarChatsDesdeIDB() {
     try {
         const chatsLivianos = await client.pupPage.evaluate(async () => {
             return new Promise((resolve) => {
@@ -240,89 +273,178 @@ async function listarChats() {
         });
 
         if (chatsLivianos.length > 0 && chatsLivianos[0].error) {
-            console.error('[WhatsApp] Fallo al extraer chats con WWebJS:', chatsLivianos[0].error);
+            console.error('[WhatsApp] Fallo al extraer chats desde IndexedDB:', chatsLivianos[0].error);
             return [];
         }
-
-        return chatsLivianos
-            .filter(chat => !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user));
+        return chatsLivianos;
     } catch (error) {
-        console.error('[WhatsApp] getChats fallo por completo:', error?.message || error);
+        console.error('[WhatsApp] La lectura de chats por IndexedDB fallo por completo:', error?.message || error);
         return [];
     }
 }
 
-// El escaneo corre una sola vez por proceso: al reconectar no se repite.
-let escaneoHecho = false;
+// Solo las conversaciones individuales tienen un telefono al que volver a escribir:
+// los grupos, los estados y los canales tambien aparecen como chats.
+function esChatDeCliente(chat) {
+    return !chat.isGroup && chat.server === 'c.us' && /^[1-9]\d{7,14}$/.test(chat.user);
+}
+
+async function listarChats() {
+    let crudos = [];
+    try {
+        const resultado = await listarChatsDelStore();
+        if (resultado?.error) console.error('[WhatsApp]', resultado.error, 'Se prueba con IndexedDB.');
+        else crudos = resultado.chats || [];
+    } catch (error) {
+        console.error('[WhatsApp] No se pudo leer el Store de chats:', error?.message || error);
+    }
+    if (!crudos.length) crudos = await listarChatsDesdeIDB();
+    const chats = crudos.filter(esChatDeCliente);
+    console.log(`[WhatsApp] ${crudos.length} conversaciones en total, ${chats.length} son de clientes individuales.`);
+    return chats;
+}
+
+// El barrido se repite solo cada SWEEP_HOURS. No manda nada: deja la lista de contactos
+// dormidos en el panel para que el vendedor elija a quien escribirle y con que texto.
+let barridoEnCurso = false;
+let barridoProgramado = false;
 client.on('ready', () => {
-    console.log('¡Cliente de WhatsApp listo y conectado!');
-    if (escaneoHecho) return;
-    escaneoHecho = true;
+    console.log('Cliente de WhatsApp listo y conectado.');
+    if (barridoProgramado) return;
+    barridoProgramado = true;
     // Damos aire a la sincronizacion antes de leer historiales: con menos margen,
-    // getChats falla porque WhatsApp Web todavia esta acomodandose.
-    setTimeout(iniciarEscaneo, 60000);
+    // WhatsApp Web todavia esta acomodando los chats y devuelve la lista incompleta.
+    setTimeout(barrerAgenda, 60000);
+    setInterval(barrerAgenda, SWEEP_HOURS * 3600000).unref();
 });
 
-async function iniciarEscaneo(intento = 1) {
+// Lee los mensajes de un chat pidiendole a WhatsApp los mas viejos, igual que cuando se
+// sube el scroll en la aplicacion. Sin esto solo se ve lo que quedo en cache al vincular.
+async function obtenerMensajesDelStore(chatId, limite, vueltas) {
+    return await client.pupPage.evaluate(async (id, max, maxVueltas) => {
+        const modulos = window.require?.('WAWebCollections');
+        if (!modulos?.Chat?.get) return { error: 'El Store de WhatsApp no expone los chats.', messages: [] };
+        const chat = modulos.Chat.get(window.require('WAWebWidFactory').createWid(id));
+        if (!chat) return { error: 'La conversacion ya no esta en el Store.', messages: [] };
+        const util = m => m && !m.isNotification;
+        let msgs = chat.msgs?.getModelsArray?.().filter(util) || [];
+        const cargar = window.require('WAWebChatLoadMessages');
+        // Cada pedido trae una tanda de mensajes viejos; el tope de vueltas evita quedarse
+        // colgado en una conversacion con anos de historial.
+        for (let vuelta = 0; msgs.length < max && vuelta < maxVueltas; vuelta++) {
+            let previos;
+            try { previos = await cargar.loadEarlierMsgs({ chat }); } catch { break; }
+            if (!previos?.length) break;
+            msgs = [...previos.filter(util), ...msgs];
+        }
+        msgs.sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+        if (msgs.length > max) msgs = msgs.slice(msgs.length - max);
+        return { messages: msgs.map(m => ({
+            fromMe: !!(m.id?.fromMe ?? m.fromMe),
+            body: String(m.body || m.caption || ''),
+            t: Number(m.t || 0),
+        })) };
+    }, chatId, limite, vueltas);
+}
+
+// El Store es la fuente buena; IndexedDB queda como respaldo por si WhatsApp renombra
+// sus modulos internos en una actualizacion.
+async function obtenerMensajes(chatId, limite, vueltas = 4) {
     try {
-        console.log('Obteniendo chats...');
-        const desde = Date.now() / 1000 - SCAN_DAYS * 86400;
-        // Solo conversaciones individuales con actividad reciente: el resto no es recuperable.
+        const resultado = await obtenerMensajesDelStore(chatId, limite, vueltas);
+        if (resultado?.messages?.length) return resultado.messages;
+        if (resultado?.error) console.error('[WhatsApp] Sin historial en el Store para ' + chatId + ': ' + resultado.error);
+    } catch (error) {
+        console.error('[WhatsApp] Fallo la lectura del historial en el Store:', error?.message || error);
+    }
+    return await obtenerMensajesDesdeIDB(chatId, limite);
+}
+
+// Recorre la agenda y registra los contactos con los que hace tiempo que no se habla.
+// Aca no interviene la IA: son fechas de ultimo mensaje, no hay nada que interpretar.
+async function barrerAgenda() {
+    if (barridoEnCurso) {
+        console.log('[Barrido] El barrido anterior sigue corriendo; se saltea esta vuelta.');
+        return 0;
+    }
+    if (!whatsappListo) {
+        console.log('[Barrido] WhatsApp todavia no esta listo; se reintenta en la proxima vuelta.');
+        return 0;
+    }
+    barridoEnCurso = true;
+    try {
+        const ahora = Date.now() / 1000;
+        const desde = ahora - SCAN_DAYS * 86400;
+        const hasta = ahora - INACTIVE_DAYS * 86400;
         const todos = await listarChats();
-        const chats = todos
-            .filter(chat => (chat.timestamp || 0) >= desde)
+        // Dormidos: hablaron alguna vez dentro de la ventana, pero no en el ultimo mes.
+        const dormidos = todos
+            .filter(chat => (chat.timestamp || 0) >= desde && (chat.timestamp || 0) <= hasta)
             .sort((a, b) => b.timestamp - a.timestamp)
             .slice(0, SCAN_CHATS);
-        console.log(`Analizando ${chats.length} de ${todos.length} chats, de los ultimos ${SCAN_DAYS} dias.`);
+        console.log('[Barrido] ' + dormidos.length + ' contactos sin actividad hace mas de ' + INACTIVE_DAYS + ' dias (ventana de ' + SCAN_DAYS + ' dias).');
 
         let revisados = 0;
-        let enviados = 0;
-        for (const descriptor of chats) {
+        let sinHistorial = 0;
+        let descartados = 0;
+        let sincronizados = 0;
+        let lote = [];
+        for (const descriptor of dormidos) {
             // Un chat ilegible no puede cortar el barrido de todos los demas.
             try {
-                // client.getChatById y fetchMessages de WWebJS también están rotos por el mismo cambio
-                // de WhatsApp en IDBObjectStore. Leemos los mensajes directamente desde IndexedDB.
-                const messages = await obtenerMensajesDesdeIDB(descriptor.id, SCAN_MESSAGES);
-
-                let chatText = '';
-                let containsKeywords = false;
-
-                for (const msg of messages) {
-                    const body = (msg.body || '').toLowerCase();
-                    chatText += `[${msg.fromMe ? 'Vendedor' : 'Cliente'}]: ${msg.body}\n`;
-
-                    if (!msg.fromMe && keywordMatcher.matches(body)) {
-                        containsKeywords = true;
-                    }
-                }
-                
-                console.log(`[DEBUG-HISTORIAL] Chat: ${descriptor.id} | Mensajes: ${messages.length} | Match: ${containsKeywords}`);
-                if (messages.length > 0) {
-                    console.log(`[DEBUG-TEXTO]\n${chatText}`);
-                }
-
-                if (containsKeywords && chatText) {
-                    console.log(`Enviando historial de ${descriptor.user} a Next.js para análisis...`);
-                    await enviarANextJS(descriptor.user, descriptor.name || descriptor.user, chatText);
-                    enviados++;
-                }
+                const messages = await obtenerMensajes(descriptor.id, SCAN_MESSAGES, 2);
+                if (!messages.length) sinHistorial++;
+                const delCliente = messages.filter(m => !m.fromMe);
+                // Escribirle a alguien que nunca contesto es la via rapida a que WhatsApp
+                // marque la cuenta como spam: solo entran conversaciones de ida y vuelta.
+                if (!delCliente.length) { descartados++; revisados++; continue; }
+                const ultimo = messages.reduce((max, m) => Math.max(max, m.t || 0), descriptor.timestamp || 0);
+                const historial = messages.map(m => '[' + (m.fromMe ? 'Vendedor' : 'Cliente') + ']: ' + m.body).join('\n');
+                if (DEBUG_CHATS) console.log('[Barrido] ' + descriptor.user + ' | ' + messages.length + ' mensajes | ultimo ' + new Date(ultimo * 1000).toISOString());
+                lote.push({
+                    phoneNumber: descriptor.user,
+                    contactName: descriptor.name || null,
+                    lastMessageAt: new Date(ultimo * 1000).toISOString(),
+                    inboundCount: delCliente.length,
+                    // Alcanza con el final de la conversacion para saber por donde quedo.
+                    history: historial.slice(-4000),
+                    // Si alguna vez preguntaron por productos, la promo les cae mejor.
+                    matchedKeywords: delCliente.some(m => keywordMatcher.matches((m.body || '').toLowerCase())),
+                });
             } catch (error) {
-                console.error(`No se pudo leer el chat de ${descriptor.user}:`, error?.message || error);
+                console.error('[Barrido] No se pudo leer el chat de ' + descriptor.user + ':', error?.message || error);
             }
             revisados++;
-            if (revisados % 25 === 0) console.log(`Barrido: ${revisados} de ${chats.length} chats revisados, ${enviados} enviados a analizar.`);
-
-            // Delay para evitar baneos
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            if (lote.length >= 100) { sincronizados += await sincronizarContactos(lote); lote = []; }
+            if (revisados % 25 === 0) console.log('[Barrido] ' + revisados + ' de ' + dormidos.length + ' revisados.');
+            // Pausa corta: leer historiales viejos obliga a WhatsApp a pedirselos al telefono.
+            await new Promise(resolve => setTimeout(resolve, 1200));
         }
-        console.log(`Barrido terminado: ${revisados} chats revisados, ${enviados} enviados a analizar.`);
+        if (lote.length) sincronizados += await sincronizarContactos(lote);
 
-        console.log('Escaneo inicial completado. El bot quedará a la espera de nuevos mensajes.');
+        console.log('[Barrido] Terminado: ' + revisados + ' chats revisados, ' + sincronizados + ' contactos cargados en el panel, ' + descartados + ' descartados por no haber respondido nunca.');
+        if (sinHistorial) console.log('[Barrido] ' + sinHistorial + ' chats no devolvieron mensajes. Si son casi todos, WhatsApp cambio la forma de guardar el historial.');
+        return sincronizados;
     } catch (error) {
-        // Recien vinculado, WhatsApp Web puede rechazar getChats hasta terminar de asentarse.
-        console.error(`Error durante el escaneo (intento ${intento} de 3):`, error);
-        if (intento < 3) setTimeout(() => iniciarEscaneo(intento + 1), 60000);
-        else console.error('[WhatsApp] El barrido del historial no pudo completarse. Reinicia el servicio para volver a intentarlo.');
+        console.error('[Barrido] El barrido fallo:', error?.message || error);
+        return 0;
+    } finally {
+        barridoEnCurso = false;
+    }
+}
+
+// Guarda los contactos dormidos en el panel. Va de a lotes para no mandar miles en un POST.
+async function sincronizarContactos(contactos) {
+    try {
+        const { data } = await axios.post(urlDelPanel('/api/contacts/sync'), { contacts: contactos }, {
+            headers: { Authorization: 'Bearer ' + SECRET_TOKEN, 'Content-Type': 'application/json' },
+            timeout: 30000,
+        });
+        console.log('[Barrido] Cargados ' + (data?.saved ?? 0) + ' contactos (' + (data?.created ?? 0) + ' nuevos).');
+        return Number(data?.saved) || 0;
+    } catch (error) {
+        console.error('[Barrido] No se pudieron cargar los contactos en el panel:', error.response?.data || error.message);
+        return 0;
     }
 }
 
@@ -399,8 +521,8 @@ client.on('message', async (msg) => {
         const user = chatId.split('@')[0];
         console.log(`\n¡Nuevo mensaje relevante de ${user}! Enviando a Next.js...`);
         
-        // Usar nuestra extraccion por IndexedDB porque msg.getChat() falla
-        const messages = await obtenerMensajesDesdeIDB(chatId, 20);
+        // msg.getChat() falla por un cambio de WhatsApp: el historial se lee del Store.
+        const messages = await obtenerMensajes(chatId, 20, 1);
 
         let chatText = '';
         for (const m of messages) {
@@ -421,6 +543,11 @@ client.on('message', async (msg) => {
         console.error('[WhatsApp] No se pudo procesar un mensaje entrante:', error?.message || error);
     }
 });
+
+// Todas las rutas del panel cuelgan del mismo dominio ya configurado en NEXTJS_API_URL.
+function urlDelPanel(ruta) {
+    return new URL(ruta, NEXTJS_API_URL).toString();
+}
 
 async function enviarANextJS(phoneNumber, contactName, history) {
     try {

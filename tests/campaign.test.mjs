@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCampaign } from '../campaign.js';
+import { createCampaign, normalizeMedia } from '../campaign.js';
 import { renderMessage } from '../dashboard/src/lib/leads.ts';
 
 function armar(overrides = {}) {
@@ -96,4 +96,29 @@ test('el mensaje se personaliza y no deja huecos cuando falta el nombre', () => 
     'Hola Ana, te escribo por tu consulta sobre Detergente. ¿Seguís interesado?');
   assert.equal(renderMessage(plantilla, { name: null, interestedIn: null }),
     'Hola, te escribo por tu consulta sobre nuestros productos. ¿Seguís interesado?');
+});
+
+test('la imagen se valida y viaja una sola vez para toda la tanda', async () => {
+  const datos = Buffer.from('imagen de prueba').toString('base64');
+  assert.equal(normalizeMedia(null), null);
+  assert.equal(normalizeMedia({ mimetype: 'application/pdf', data: datos }), null);
+  assert.equal(normalizeMedia({ mimetype: 'image/png', data: 'no es base64 !!' }), null);
+  const limpia = normalizeMedia({ mimetype: 'IMAGE/PNG', data: datos, filename: '../promo de marzo.png' });
+  assert.deepEqual(limpia, { mimetype: 'image/png', data: datos, filename: '..promodemarzo.png' });
+
+  const enviados = [];
+  const campaign = createCampaign(async (phoneNumber, message, media) => { enviados.push({ phoneNumber, message, media }); },
+    { minDelay: 0, maxDelay: 0, wait: async () => {} });
+  assert.equal(campaign.enqueue([{ phoneNumber: '5491133334444', message: 'Hola' }, { phoneNumber: '5491155556666', message: '' }],
+    { mimetype: 'image/png', data: datos, filename: 'promo.png' }), 2);
+  await campaign.whenIdle();
+  assert.equal(enviados.length, 2);
+  assert.equal(enviados[1].message, '', 'con imagen el texto puede ir vacio');
+  assert.equal(enviados[0].media.filename, 'promo.png');
+  assert.equal(enviados[0].media, enviados[1].media, 'una sola copia de la imagen en memoria');
+});
+
+test('sin imagen un mensaje vacio no se encola', () => {
+  const campaign = createCampaign(async () => {}, { minDelay: 0, maxDelay: 0, wait: async () => {} });
+  assert.equal(campaign.enqueue([{ phoneNumber: '5491133334444', message: '   ' }]), 0);
 });

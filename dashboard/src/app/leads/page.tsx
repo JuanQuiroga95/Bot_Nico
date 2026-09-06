@@ -26,7 +26,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Promis
   const pages = Math.max(1, Math.ceil(total / 20));
   const page = Math.min(requestedPage, pages);
   const leads = await prisma.lead.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 20, skip: (page - 1) * 20,
-    select: { id: true, name: true, phoneNumber: true, interestedIn: true, aiReasoning: true, status: true, createdAt: true, updatedAt: true } });
+    select: { id: true, name: true, phoneNumber: true, interestedIn: true, aiReasoning: true, status: true, leadType: true, lastMessageAt: true, createdAt: true } });
   const pageUrl = (next: number) => '/leads?' + new URLSearchParams({ q, status, page: String(next) });
   return <div className="animate-fade-in">
     <header className="page-header"><div><span className="eyebrow">TU CARTERA DE CONTACTOS</span><h1>Leads</h1><p className="subtitle">Buscá, contactá y acompañá cada oportunidad.</p></div><div className="button-row"><Refresh /><Link className="button" href="/leads/nuevo"><Plus size={17} />Nuevo lead</Link></div></header>

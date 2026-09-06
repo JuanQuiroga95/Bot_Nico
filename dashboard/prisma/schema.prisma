@@ -15,6 +15,14 @@ model Lead {
   aiReasoning   String?  @db.Text
   interestedIn  String?
   status        String   @default("PENDING_CONTACT") // PENDING_CONTACT, CONTACTED, CONVERTED
+  // OPORTUNIDAD: consulta detectada por la IA. DORMIDO: contacto sin actividad hace tiempo.
+  leadType      String?
+  // Fecha del ultimo mensaje del chat, para saber hace cuanto que no se habla.
+  lastMessageAt DateTime?
+  // Ultima vez que se le mando una campana, para no repetirle la promo cada semana.
+  lastCampaignAt DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+
+  @@index([leadType, lastMessageAt])
 }

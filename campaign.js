@@ -6,6 +6,19 @@ export function normalizePhone(value) {
     return /^[1-9]\d{7,14}$/.test(phone) ? phone : null;
 }
 
+// Solo imagenes: un PDF o un video cambian como lo recibe el cliente y como lo lee WhatsApp.
+const TIPOS_DE_IMAGEN = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+export function normalizeMedia(media) {
+    if (!media) return null;
+    const mimetype = String(media.mimetype ?? '').toLowerCase();
+    const data = String(media.data ?? '');
+    if (!TIPOS_DE_IMAGEN.includes(mimetype)) return null;
+    if (!data || data.length > 12000000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return null;
+    const filename = String(media.filename ?? '').replace(/[^\w.-]/g, '').slice(0, 80) || 'imagen.jpg';
+    return { mimetype, data, filename };
+}
+
 export function createCampaign(send, {
     cap = 40,
     minDelay = 40000,
@@ -43,7 +56,7 @@ export function createCampaign(send, {
                 const item = queue.shift();
                 if (!item) break;
                 try {
-                    await send(item.phoneNumber, item.message);
+                    await send(item.phoneNumber, item.message, item.media);
                     sentToday++;
                     lastSentAt = now();
                     lastError = null;
@@ -66,16 +79,20 @@ export function createCampaign(send, {
 
     return {
         // Devuelve cuantos quedaron encolados: descarta invalidos, repetidos y ya pendientes.
-        enqueue(items) {
+        // La imagen es una sola para toda la tanda: se guarda por referencia, no una copia
+        // por destinatario, para no multiplicar megabytes en memoria.
+        enqueue(items, media = null) {
+            const adjunto = normalizeMedia(media);
             const pendientes = new Set(queue.map(item => item.phoneNumber));
             let queued = 0;
             for (const item of Array.isArray(items) ? items : []) {
                 const phoneNumber = normalizePhone(item?.phoneNumber);
                 const message = String(item?.message ?? '').trim();
-                if (!phoneNumber || !message || message.length > 1000) continue;
+                // Con imagen el texto es el epigrafe y puede ir vacio.
+                if (!phoneNumber || (!message && !adjunto) || message.length > 1000) continue;
                 if (pendientes.has(phoneNumber)) continue;
                 pendientes.add(phoneNumber);
-                queue.push({ phoneNumber, message });
+                queue.push({ phoneNumber, message, media: adjunto });
                 queued++;
             }
             pump();
