@@ -166,25 +166,42 @@ function esChatDeCliente(chat) {
 // liviana, y despues se trae cada chat por separado.
 async function listarChats() {
     try {
-        // En cuentas con muchos chats, client.getChats() intenta enviar objetos masivos
-        // desde el navegador hacia Node y choca (Puppeteer bridge limit).
-        // Hacemos el mapeo dentro del navegador para traer solo los IDs y timestamps.
         const chatsLivianos = await client.pupPage.evaluate(async () => {
-            try {
-                if (!window.WWebJS) return [];
-                // getChats() original de WWebJS (es async)
-                const chats = await window.WWebJS.getChats();
-                return chats.map(chat => ({
-                    id: chat?.id?._serialized || '',
-                    user: chat?.id?.user || '',
-                    server: chat?.id?.server || '',
-                    isGroup: !!chat?.isGroup,
-                    name: chat?.name || '',
-                    timestamp: Number(chat?.timestamp || chat?.t || 0)
-                }));
-            } catch (err) {
-                return [{ error: err.message || 'Error WWebJS' }];
-            }
+            return new Promise((resolve) => {
+                try {
+                    const request = indexedDB.open('model-storage');
+                    request.onsuccess = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains('chat')) {
+                            return resolve([{ error: 'No existe el store chat' }]);
+                        }
+                        const tx = db.transaction('chat', 'readonly');
+                        const store = tx.objectStore('chat');
+                        const getAllRequest = store.getAll();
+                        
+                        getAllRequest.onsuccess = (e) => {
+                            const records = e.target.result || [];
+                            const mapped = records.map(chat => {
+                                const idString = chat?.id || '';
+                                const [user, server] = idString.split('@');
+                                return {
+                                    id: idString,
+                                    user: user || '',
+                                    server: server || '',
+                                    isGroup: idString.includes('@g.us'),
+                                    name: chat?.name || '',
+                                    timestamp: Number(chat?.t || 0)
+                                };
+                            });
+                            resolve(mapped);
+                        };
+                        getAllRequest.onerror = () => resolve([{ error: 'Fallo al leer chat store' }]);
+                    };
+                    request.onerror = () => resolve([{ error: 'Fallo al abrir model-storage' }]);
+                } catch (err) {
+                    resolve([{ error: err.message || 'Error IDB' }]);
+                }
+            });
         });
 
         if (chatsLivianos.length > 0 && chatsLivianos[0].error) {
