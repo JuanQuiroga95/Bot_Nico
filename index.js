@@ -356,7 +356,10 @@ client.on('message', async (msg) => {
         }
 
         const chatId = msg.from;
-        if (!chatId || chatId.includes('@g.us') || !chatId.includes('@c.us')) return;
+        if (!chatId || chatId.includes('@g.us') || chatId.includes('broadcast')) {
+            console.log(`[DEBUG] Ignorando chat por ser grupo o broadcast: ${chatId}`);
+            return;
+        }
 
         const user = chatId.split('@')[0];
         console.log(`\n¡Nuevo mensaje relevante de ${user}! Enviando a Next.js...`);
