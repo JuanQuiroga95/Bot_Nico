@@ -34,7 +34,11 @@ const SWEEP_HOURS = Number(process.env.SWEEP_HOURS) || 12;
 // Sin un volumen montado en esta ruta, cada despliegue vuelve a pedir el QR.
 const AUTH_PATH = process.env.WWEBJS_AUTH_PATH || './.wwebjs_auth';
 console.log(`[WhatsApp] Sesion guardada en ${AUTH_PATH}${process.env.WWEBJS_AUTH_PATH ? '' : ' (temporal: se pierde al reiniciar)'}.`);
-console.log(`[WhatsApp] ${existsSync(AUTH_PATH) ? 'Hay una sesion previa en esa ruta: no deberia pedir QR.' : 'No hay sesion previa: va a pedir QR.'}`);
+// existsSync sobre la ruta no sirve: en Railway es el punto de montaje y existe siempre.
+function haySesionGuardada() {
+    try { return existsSync(AUTH_PATH) && readdirSync(AUTH_PATH).length > 0; } catch { return false; }
+}
+console.log(`[WhatsApp] ${haySesionGuardada() ? 'Hay una sesion previa en esa ruta: no deberia pedir QR.' : 'No hay sesion previa: va a pedir QR.'}`);
 
 // Si el contenedor se apaga de golpe, Chrome deja cerraduras que impiden reusar el perfil
 // y WhatsApp descarta la sesion. Se borran al arrancar: no contienen credenciales.
@@ -134,13 +138,10 @@ client.on('authenticated', () => {
     console.log('[WhatsApp] Sesion autenticada. Esperando que termine de sincronizar.');
 });
 
-// Las credenciales guardadas ya no sirven: conservarlas repite el mismo error en cada arranque.
-client.on('auth_failure', async (message) => {
+// LocalAuth reintenta solo, sin la sesion guardada, y termina mostrando un QR nuevo.
+client.on('auth_failure', (message) => {
     connectionStatus = 'error de autenticacion';
-    console.error('[WhatsApp] Error de autenticacion:', message);
-    await cerrarNavegador();
-    borrarSesionGuardada();
-    process.exit(1);
+    console.error('[WhatsApp] Error de autenticacion:', message, '- se va a pedir un QR nuevo.');
 });
 
 // client.destroy() puede quedarse colgado si Chrome ya se estaba cerrando por el logout.
@@ -153,25 +154,31 @@ async function cerrarNavegador(limite = 10000) {
 }
 
 // Una desconexion no debe matar el proceso: con la sesion en disco se recupera sola.
-// Ante LOGOUT la sesion guardada ya no sirve y el navegador se esta cerrando: hay que
-// esperar a que termine antes de reintentar, o Puppeteer falla al inyectar el cliente.
+// Ante LOGOUT tampoco: whatsapp-web.js ya borra la sesion y se rearma para pedir un QR
+// nuevo dentro del mismo proceso (Client.js, listener de 'framenavigated'). Reiniciar ahi
+// cortaba esa recuperacion y cada arranque invalidaba el QR anterior antes de escanearlo.
 let reconectando = false;
+let vigilanciaDeQr = null;
 client.on('disconnected', async (reason) => {
     connectionStatus = 'desconectado, reintentando';
     whatsappListo = false;
     console.error('[WhatsApp] Desconectado:', reason);
+    if (String(reason).toUpperCase() === 'LOGOUT') {
+        console.error('[WhatsApp] Sesion cerrada. Esperando el QR nuevo: no cierres esta pantalla.');
+        // Si en 3 minutos no aparecio ningun QR, la recuperacion se colgo: recien ahi se
+        // descarta la sesion y se sale con error para que Railway arranque un proceso limpio.
+        clearTimeout(vigilanciaDeQr);
+        vigilanciaDeQr = setTimeout(async () => {
+            console.error('[WhatsApp] No llego ningun QR despues del cierre de sesion. Reiniciando.');
+            await cerrarNavegador();
+            borrarSesionGuardada();
+            process.exit(1);
+        }, 180000);
+        vigilanciaDeQr.unref();
+        return;
+    }
     if (reconectando) return;
     reconectando = true;
-    // Con LOGOUT la sesion quedo invalidada: reconectar en caliente hace fallar a Puppeteer
-    // ("Execution context was destroyed"). Conviene salir y dejar que arranque un proceso limpio.
-    if (String(reason).toUpperCase() === 'LOGOUT') {
-        console.error('[WhatsApp] La sesion fue cerrada desde el telefono. Reiniciando para pedir un QR nuevo.');
-        await cerrarNavegador();
-        borrarSesionGuardada();
-        // Railway solo reinicia el servicio cuando el proceso termina con error. Saliendo con 0
-        // el contenedor quedaba apagado y el dashboard se quedaba sin bot al que pedirle el QR.
-        return process.exit(1);
-    }
     await cerrarNavegador();
     await new Promise(resolve => setTimeout(resolve, 10000));
     try {
@@ -195,6 +202,8 @@ client.on('ready', () => {
 });
 
 client.on('qr', (qr) => {
+    // El QR llego: la recuperacion funciono y no hace falta reiniciar nada.
+    clearTimeout(vigilanciaDeQr);
     connectionStatus = 'QR generado, esperando escaneo';
     console.log('[WhatsApp] QR generado. Escanea el ultimo QR en los Deploy Logs.');
     console.log('\n\n=== ESCANEA ESTE QR CON TU WHATSAPP ===\n');
