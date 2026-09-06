@@ -169,11 +169,11 @@ async function listarChats() {
         // En cuentas con muchos chats, client.getChats() intenta enviar objetos masivos
         // desde el navegador hacia Node y choca (Puppeteer bridge limit).
         // Hacemos el mapeo dentro del navegador para traer solo los IDs y timestamps.
-        const chatsLivianos = await client.pupPage.evaluate(() => {
+        const chatsLivianos = await client.pupPage.evaluate(async () => {
             try {
                 if (!window.WWebJS) return [];
-                // getChats() original de WWebJS
-                const chats = window.WWebJS.getChats();
+                // getChats() original de WWebJS (es async)
+                const chats = await window.WWebJS.getChats();
                 return chats.map(chat => ({
                     id: chat?.id?._serialized || '',
                     user: chat?.id?.user || '',
