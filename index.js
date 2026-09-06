@@ -393,7 +393,7 @@ client.on('message', async (msg) => {
 async function enviarANextJS(phoneNumber, contactName, history) {
     try {
         if (!SECRET_TOKEN) throw new Error('Falta configurar API_SECRET_TOKEN en Railway.');
-        await axios.post(NEXTJS_API_URL, {
+        const { data } = await axios.post(NEXTJS_API_URL, {
             phoneNumber,
             contactName: contactName || 'No agendado',
             history
@@ -403,7 +403,13 @@ async function enviarANextJS(phoneNumber, contactName, history) {
                 'Content-Type': 'application/json'
             }
         });
-        console.log(`[EXITO] Datos enviados correctamente a Next.js`);
+        if (data?.success === true && data.action === 'LEAD_SAVED' && data.lead?.id) {
+            console.log(`[CRM] LEAD_SAVED: ${phoneNumber}. Lead: ${data.lead.id}`);
+        } else if (data?.success === true && data.action === 'IGNORED_BY_AI') {
+            console.log(`[CRM] IGNORED_BY_AI: ${phoneNumber}. Motivo: ${data.reason || 'El servidor no informó el motivo.'}`);
+        } else {
+            console.error(`[CRM] Respuesta inesperada para ${phoneNumber}; no se confirmó el guardado.`);
+        }
     } catch (error) {
         console.error(`[ERROR] Al enviar datos de ${phoneNumber}:`, error.response?.data || error.message);
     }

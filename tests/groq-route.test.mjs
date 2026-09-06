@@ -68,3 +68,13 @@ test('un resultado incompleto de Groq no crea leads', async () => {
   assert.equal((await route.run()).status, 502);
   assert.equal(route.writes(), 0);
 });
+
+test('un chat descartado devuelve el motivo sin crear un lead', async () => {
+  const route = load({ content: JSON.stringify({ isRecoverable: false, reason: 'Consulta de soporte de software', lastInteractedProduct: null }) });
+  const response = await route.run();
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.action, 'IGNORED_BY_AI');
+  assert.equal(result.reason, 'Consulta de soporte de software');
+  assert.equal(route.writes(), 0);
+});
