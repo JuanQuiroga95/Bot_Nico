@@ -17,9 +17,9 @@ export default async function LeadsPage({ searchParams }: { searchParams: Promis
   const where: Prisma.LeadWhereInput = {
     ...(status ? { status } : {}),
     ...(q ? { OR: [
-      { name: { contains: q, mode: 'insensitive' } },
+      { name: { contains: q } },
       { phoneNumber: { contains: q.replace(/^\+/, '') } },
-      { interestedIn: { contains: q, mode: 'insensitive' } },
+      { interestedIn: { contains: q } },
     ] } : {}),
   };
   const total = await prisma.lead.count({ where });

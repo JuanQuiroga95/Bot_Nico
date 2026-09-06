@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   const status = params.get('status') ?? '';
   const where: Prisma.LeadWhereInput = {
     ...(isLeadStatus(status) ? { status } : {}),
-    ...(q ? { OR: [{ name: { contains: q, mode: 'insensitive' } }, { phoneNumber: { contains: q.replace(/^\+/, '') } }, { interestedIn: { contains: q, mode: 'insensitive' } }] } : {}),
+    ...(q ? { OR: [{ name: { contains: q } }, { phoneNumber: { contains: q.replace(/^\+/, '') } }, { interestedIn: { contains: q } }] } : {}),
   };
   try {
     const leads = await prisma.lead.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 10001,
